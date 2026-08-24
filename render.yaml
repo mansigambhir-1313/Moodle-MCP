@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: jaipuria-moodle-mcp
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn server:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: MCP_ADMIN_TOKEN
+        sync: false
+      - key: MCP_TOKENS
+        sync: false
+      - key: MCP_SERVER_BASE_URL
+        sync: false
+      - key: REPORT_PUBLIC_BASE_URL
+        value: https://reports.tryrehearsal.ai
