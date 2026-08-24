@@ -25,13 +25,22 @@ async def main():
         who = await client.call_tool("whoami", {})
         print("\nwhoami ->", who.data)
 
-        acc = await client.call_tool("accuracy_overview",
-                                     {"params": {"campus": "jaipur", "batch": "2024-26", "trimester": "5"}})
-        print("\naccuracy_overview(jaipur 2024-26 T5) ->", acc.data)
+        scope = {"campus": "jaipur", "batch": "2024-26", "trimester": "5"}
 
-        risk = await client.call_tool("at_risk_students",
-                                      {"params": {"campus": "jaipur", "batch": "2024-26", "trimester": "5", "limit": 3}})
-        print("\nat_risk_students -> count:", risk.data.get("at_risk_count"))
+        marks = await client.call_tool("marks_overview", {"params": scope})
+        print("\nmarks_overview ->", marks.data.get("mean_mark_pct"), "% mean,",
+              marks.data.get("students_with_zeros"), "with zeros")
+
+        att = await client.call_tool("attendance_overview", {"params": scope})
+        print("attendance_overview ->", att.data.get("mean_attendance_pct"), "% mean,",
+              att.data.get("below_75_pct_count"), "below 75%")
+
+        roster = await client.call_tool("list_students",
+                                        {"params": {"campus": "jaipur", "batch": "2024-26", "limit": 1}})
+        sid = roster.data["students"][0]["student_id"]
+        stu = await client.call_tool("get_student", {"params": {"student_id": sid, "trimester": "5"}})
+        print(f"get_student({sid}) ->", stu.data["student"]["name"], "|",
+              stu.data["subjects_count"], "subjects |", stu.data["overall_attendance_pct"], "% attendance")
 
 
 if __name__ == "__main__":
