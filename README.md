@@ -23,6 +23,7 @@ and their two-scheme accuracy scores are a **secondary** layer on top.
 |---|---|---|
 | **students** (primary) | `list_students`, `get_student`, `student_marks`, `student_attendance` | raw students / marks / attendance |
 | **subjects** (primary) | `list_subjects`, `subject_performance` | raw courses / marks / attendance |
+| **insights** ⭐ (primary) | `student_trajectory`, `student_360`, `cohort_pulse`, `watchlist` | cross-trimester + single-pane |
 | **analytics** (primary) | `marks_overview`, `attendance_overview`, `top_performers`, `cohort_compare` | raw rollup |
 | **at_risk** (primary) | `at_risk_students`, `attendance_watch`, `zero_alerts` | raw rollup |
 | accuracy (secondary) | `get_report_accuracy`, `accuracy_overview`, `flagged_reports` | `report_accuracy` |
