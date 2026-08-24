@@ -15,7 +15,7 @@ from starlette.routing import Route
 from annotations import READONLY_ANNOTATIONS
 from config import settings, validate_config
 from supabase_client import create_service
-from tools import accuracy, analytics, at_risk, leaderboard, reports
+from tools import accuracy, analytics, at_risk, reports, students, subjects
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -60,12 +60,13 @@ async def whoami() -> dict:
             "campuses": svc.allowed_campuses if svc.allowed_campuses is not None else "all"}
 
 
-# Tool registration — each module exposes register(mcp, get_authenticated_service)
-reports.register(mcp, get_authenticated_service)
-analytics.register(mcp, get_authenticated_service)
-accuracy.register(mcp, get_authenticated_service)
-at_risk.register(mcp, get_authenticated_service)
-leaderboard.register(mcp, get_authenticated_service)
+# Tool registration — DATA-FIRST modules first, then the secondary report/accuracy layer.
+students.register(mcp, get_authenticated_service)     # roster + raw marks + attendance (primary)
+subjects.register(mcp, get_authenticated_service)     # subject catalog + cohort subject data
+analytics.register(mcp, get_authenticated_service)    # cohort marks/attendance overview, top, compare
+at_risk.register(mcp, get_authenticated_service)      # at-risk / attendance watch / zeros (raw)
+accuracy.register(mcp, get_authenticated_service)     # report accuracy scores (secondary)
+reports.register(mcp, get_authenticated_service)      # generated narrative report (secondary)
 
 app = mcp.http_app()
 

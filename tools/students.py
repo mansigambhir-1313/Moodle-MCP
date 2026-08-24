@@ -1,0 +1,204 @@
+"""Student data — the primary surface. Roster, and each student's RAW marks and attendance read
+straight from the Moodle tables (not the generated report). Covers every ingested student.
+Read-only, campus-scoped."""
+from collections import defaultdict
+
+from pydantic import BaseModel, Field
+
+from annotations import READONLY_ANNOTATIONS
+from guardrails import clamp_limit, not_found
+from tools.common import (attendance_for, attendance_pct, courses_for, find_student,
+                          marks_for, pct)
+
+
+class RosterParams(BaseModel):
+    campus: str = Field(description="campus (within your grant)")
+    batch: str = Field(description="batch e.g. '2024-26'")
+    section: str | None = Field(default=None, description="optional section/group filter")
+    query: str | None = Field(default=None, description="optional name / enrolment-id fragment")
+    limit: int = Field(default=50, description="max students, 1-50")
+
+
+class StudentParams(BaseModel):
+    student_id: str = Field(description="enrolment id, e.g. 'JJ24PG099'")
+    trimester: str | None = Field(default=None, description="restrict to one trimester's subjects")
+
+
+def _roster_impl(svc, p: RosterParams) -> dict:
+    if svc.campus_scope(p.campus) == []:
+        return not_found("students")
+    q = (svc.client.table("students")
+         .select("student_id,student_name,campus,batch,section_group")
+         .eq("campus", p.campus).eq("batch", p.batch))
+    rows = (q.limit(100000).execute()).data or []
+    seen, uniq = set(), []
+    for r in rows:  # students table is per-run; dedupe by id
+        if r["student_id"] in seen:
+            continue
+        seen.add(r["student_id"]); uniq.append(r)
+    if p.section:
+        uniq = [r for r in uniq if (r.get("section_group") or "") == p.section]
+    if p.query:
+        ql = p.query.lower()
+        uniq = [r for r in uniq if ql in (r.get("student_name") or "").lower()
+                or ql in (r.get("student_id") or "").lower()]
+    uniq.sort(key=lambda r: (r.get("student_name") or ""))
+    total = len(uniq)
+    uniq = uniq[:clamp_limit(p.limit)]
+    return {"count": total, "showing": len(uniq),
+            "students": [{"student_id": r["student_id"], "name": r.get("student_name"),
+                          "section": r.get("section_group")} for r in uniq]}
+
+
+def _resolve(svc, student_id, trimester):
+    stu = find_student(svc, student_id)
+    if not stu:
+        return None
+    run_id = svc.latest_run(stu["campus"], stu["batch"])
+    if not run_id:
+        return None
+    courses = courses_for(svc, run_id, trimester)
+    return stu, run_id, courses
+
+
+def _subject_rollup(courses, marks, att):
+    by_course_marks = defaultdict(list)
+    for m in marks:
+        by_course_marks[m["course_id"]].append(m)
+    by_course_att = defaultdict(list)
+    for a in att:
+        by_course_att[a["course_id"]].append(a)
+    subjects = []
+    for cid, meta in courses.items():
+        cms = by_course_marks.get(cid, [])
+        graded = [m for m in cms if m.get("graded")]
+        tot_obt = sum(float(m["obtained_score"]) for m in graded
+                      if isinstance(m.get("obtained_score"), (int, float)))
+        tot_max = sum(float(m["max_score"]) for m in graded
+                      if isinstance(m.get("max_score"), (int, float)))
+        present, total, apct = attendance_pct(by_course_att.get(cid, []))
+        if not cms and not by_course_att.get(cid):
+            continue
+        subjects.append({
+            "subject": meta["subject"], "trimester": meta["trimester"],
+            "overall_mark_pct": pct(tot_obt, tot_max),
+            "components": [{"component": m.get("component_label"), "kind": m.get("kind"),
+                            "obtained": m.get("obtained_score"), "max": m.get("max_score"),
+                            "pct": pct(m.get("obtained_score"), m.get("max_score")),
+                            "graded": m.get("graded")} for m in cms],
+            "attendance": {"present": present, "sessions": total, "pct": apct},
+        })
+    subjects.sort(key=lambda s: (s["overall_mark_pct"] is None, s["overall_mark_pct"] or 0))
+    return subjects
+
+
+def _student_impl(svc, p: StudentParams) -> dict:
+    got = _resolve(svc, p.student_id, p.trimester)
+    if not got:
+        return not_found("student")
+    stu, run_id, courses = got
+    cids = list(courses)
+    marks = marks_for(svc, run_id, student_id=p.student_id, course_ids=cids)
+    att = attendance_for(svc, run_id, student_id=p.student_id, course_ids=cids)
+    subjects = _subject_rollup(courses, marks, att)
+    ov_att = attendance_pct(att)
+    return {"found": True,
+            "student": {"student_id": p.student_id, "name": stu.get("student_name"),
+                        "campus": stu.get("campus"), "batch": stu.get("batch"),
+                        "section": stu.get("section_group")},
+            "trimester": p.trimester or "all",
+            "subjects_count": len(subjects),
+            "overall_attendance_pct": ov_att[2],
+            "subjects": subjects}
+
+
+def _marks_impl(svc, p: StudentParams) -> dict:
+    got = _resolve(svc, p.student_id, p.trimester)
+    if not got:
+        return not_found("student")
+    stu, run_id, courses = got
+    marks = marks_for(svc, run_id, student_id=p.student_id, course_ids=list(courses))
+    out = []
+    for m in marks:
+        meta = courses.get(m["course_id"], {})
+        out.append({"subject": meta.get("subject"), "trimester": meta.get("trimester"),
+                    "component": m.get("component_label"), "kind": m.get("kind"),
+                    "obtained": m.get("obtained_score"), "max": m.get("max_score"),
+                    "pct": pct(m.get("obtained_score"), m.get("max_score")),
+                    "graded": m.get("graded")})
+    out.sort(key=lambda x: (x["subject"] or "", x["component"] or ""))
+    return {"student_id": p.student_id, "name": stu.get("student_name"),
+            "components": len(out), "marks": out}
+
+
+def _attendance_impl(svc, p: StudentParams) -> dict:
+    got = _resolve(svc, p.student_id, p.trimester)
+    if not got:
+        return not_found("student")
+    stu, run_id, courses = got
+    att = attendance_for(svc, run_id, student_id=p.student_id, course_ids=list(courses))
+    by_course = defaultdict(list)
+    for a in att:
+        by_course[a["course_id"]].append(a)
+    subjects = []
+    for cid, rows in by_course.items():
+        present, total, apct = attendance_pct(rows)
+        subjects.append({"subject": courses.get(cid, {}).get("subject"),
+                         "present": present, "sessions": total, "attendance_pct": apct})
+    subjects.sort(key=lambda s: (s["attendance_pct"] is None, s["attendance_pct"] or 0))
+    ov = attendance_pct(att)
+    return {"student_id": p.student_id, "name": stu.get("student_name"),
+            "overall_attendance_pct": ov[2], "overall_sessions": ov[1], "subjects": subjects}
+
+
+def register(mcp, get_service):
+    @mcp.tool(title="List Students", annotations=READONLY_ANNOTATIONS)
+    async def list_students(params: RosterParams) -> dict:
+        """
+        WHAT: The student roster for a campus/batch (optionally one section) — every ingested
+        student, with name and section. Report status is irrelevant here.
+        USE WHEN they say: 'list students in indore 2024-26', 'class roster', 'who is in section A',
+        'find <name>', 'how many students in this batch'.
+        DO NOT USE WHEN they want one student's marks (get_student) or subject data.
+        RETURNS: count + students (student_id, name, section).
+        """
+        return _roster_impl(await get_service(), params)
+
+    @mcp.tool(title="Get Student", annotations=READONLY_ANNOTATIONS)
+    async def get_student(params: StudentParams) -> dict:
+        """
+        WHAT: One student's complete raw data — every enrolled subject with its component marks
+        (obtained/max/%), an overall per-subject mark, and per-subject attendance — straight from
+        Moodle. Works for ANY ingested student, with or without a generated report.
+        USE WHEN they say: 'show me <id>'s marks and attendance', 'how is <name> doing',
+        'full record for JJ24PG099', 'what did this student score'.
+        DO NOT USE WHEN they want only marks (student_marks) or only attendance (student_attendance),
+        or a whole subject/cohort.
+        RETURNS: student, subjects[] with components + attendance, overall attendance. Pass
+        trimester to scope to one term.
+        """
+        return _student_impl(await get_service(), params)
+
+    @mcp.tool(title="Student Marks", annotations=READONLY_ANNOTATIONS)
+    async def student_marks(params: StudentParams) -> dict:
+        """
+        WHAT: A flat, component-level list of one student's marks (subject, component, obtained/max,
+        %, graded flag) — the raw gradebook rows.
+        USE WHEN they say: 'list <id>'s marks', 'component-wise scores', 'what did they get in each
+        quiz/assignment', 'gradebook for <name>'.
+        DO NOT USE WHEN they want attendance or the combined record (get_student).
+        RETURNS: marks[] (subject, component, obtained, max, pct, graded).
+        """
+        return _marks_impl(await get_service(), params)
+
+    @mcp.tool(title="Student Attendance", annotations=READONLY_ANNOTATIONS)
+    async def student_attendance(params: StudentParams) -> dict:
+        """
+        WHAT: One student's attendance per subject — sessions present, total sessions, and % — from
+        the raw attendance records.
+        USE WHEN they say: 'what is <id>'s attendance', 'attendance per subject', 'how many classes
+        did <name> miss', 'attendance record'.
+        DO NOT USE WHEN they want marks (student_marks) or the combined record.
+        RETURNS: overall_attendance_pct + per-subject present/sessions/pct.
+        """
+        return _attendance_impl(await get_service(), params)

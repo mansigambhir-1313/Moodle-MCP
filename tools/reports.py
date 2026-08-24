@@ -109,18 +109,9 @@ def _status_impl(svc, p: StatusParams) -> dict:
 
 
 def register(mcp, get_service):
-    @mcp.tool(title="Search Students", annotations=READONLY_ANNOTATIONS)
-    async def search_students(params: SearchParams) -> dict:
-        """
-        WHAT: Find students and their report summary cards (name, subjects, subjects at/above the
-        class average, strongest subject) within your campuses.
-        USE WHEN they say: 'find <name>', 'list students in <campus> <batch>', 'who is in T5',
-        'show me the reports for indore 2024-26'.
-        DO NOT USE WHEN they want ONE student's full report (use get_student_report) or cohort
-        totals (use campus_overview).
-        RETURNS: count + student cards. Address students by name, never internal ids.
-        """
-        return _search_impl(await get_service(), params)
+    # NOTE: this module is the SECONDARY report layer. Raw student data lives in tools/students.py
+    # (list_students / get_student / student_marks / student_attendance) — prefer those. Here we
+    # only expose the generated narrative report and the pipeline status.
 
     @mcp.tool(title="Get Student Report", annotations=READONLY_ANNOTATIONS)
     async def get_student_report(params: ReportParams) -> dict:

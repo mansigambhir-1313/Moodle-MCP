@@ -10,25 +10,24 @@ Claude CLI) and ask, in plain language, about student performance reports, cohor
 > per-student RLS model to a **role-based, campus-scoped faculty model**. Full design in
 > [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
-## What makes it exclusive
+## Data-first
 
-It doesn't dump tables — it exposes what the pipeline *produced*:
+The **primary** surface is the raw Moodle data — every ingested student's marks, attendance,
+subjects and enrolment, queryable directly from the `students` / `courses` / `marks` /
+`attendance_sessions` tables (works whether or not a report was generated). The generated reports
+and their two-scheme accuracy scores are a **secondary** layer on top.
 
-- **Finished, validated reports** (narrative + the deterministic figures the renderer used).
-- **Accuracy as first-class data** — every report carries a two-scheme score (faithfulness panel
-  + two-turn LLM judge). Ask *"which reports are flagged and why?"*
-- **Early-warning triage** — at-risk students, attendance watch, zero alerts.
+## Tools (18, across 6 modules)
 
-## Tools (16, across 5 modules)
-
-| Module | Tools |
-|---|---|
-| reports | `search_students`, `get_student_report`, `report_pipeline_status` |
-| analytics | `campus_overview`, `subject_performance`, `cohort_compare` |
-| accuracy | `get_report_accuracy`, `accuracy_overview`, `flagged_reports` |
-| at_risk | `at_risk_students`, `attendance_watch`, `zero_alerts` |
-| leaderboard | `top_performers`, `strength_map`, `most_improved` |
-| _(server)_ | `whoami` |
+| Module | Tools | Source |
+|---|---|---|
+| **students** (primary) | `list_students`, `get_student`, `student_marks`, `student_attendance` | raw students / marks / attendance |
+| **subjects** (primary) | `list_subjects`, `subject_performance` | raw courses / marks / attendance |
+| **analytics** (primary) | `marks_overview`, `attendance_overview`, `top_performers`, `cohort_compare` | raw rollup |
+| **at_risk** (primary) | `at_risk_students`, `attendance_watch`, `zero_alerts` | raw rollup |
+| accuracy (secondary) | `get_report_accuracy`, `accuracy_overview`, `flagged_reports` | `report_accuracy` |
+| reports (secondary) | `get_student_report`, `report_pipeline_status` | `student_reports` |
+| _(server)_ | `whoami` | token |
 
 Every tool is `SELECT`-only, campus-scoped to the caller's token, and returns bounded, structured
 rows. No write path, no ingestion, no mailing — ever.
