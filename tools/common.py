@@ -148,6 +148,18 @@ from cache import TTLCache  # noqa: E402
 from collections import defaultdict  # noqa: E402
 
 _rollup_cache = TTLCache(maxsize=8, ttl=300)
+_marks_cache = TTLCache(maxsize=8, ttl=300)
+
+
+def scope_marks(svc, run_id, course_ids):
+    """All raw marks rows for a set of courses, cached per (run, course-set)."""
+    key = (run_id, tuple(sorted(course_ids)))
+    hit = _marks_cache.get(key)
+    if hit is not None:
+        return hit
+    rows = marks_for(svc, run_id, course_ids=list(course_ids))
+    _marks_cache.set(key, rows)
+    return rows
 
 
 def cohort_rollup(svc, run_id, courses) -> dict:

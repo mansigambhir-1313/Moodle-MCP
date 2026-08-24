@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 
 from annotations import READONLY_ANNOTATIONS
 from guardrails import not_found
-from tools.common import (attendance_for, attendance_pct, courses_for, marks_for, pct)
+from tools.common import (attendance_for, attendance_pct, courses_for, marks_for, pct, scope_marks)
 
 
 class ScopeParams(BaseModel):
@@ -94,6 +94,103 @@ def _subject_impl(svc, p: SubjectParams) -> dict:
                            for name, c in comp.items()]}
 
 
+def _student_means(marks, cids):
+    """course_id -> {student_id -> overall graded mark %} for a set of courses."""
+    from collections import defaultdict
+    agg = defaultdict(lambda: defaultdict(lambda: [0.0, 0.0]))
+    for m in marks:
+        if m["course_id"] in cids and m.get("graded") \
+                and isinstance(m.get("obtained_score"), (int, float)) \
+                and isinstance(m.get("max_score"), (int, float)):
+            a = agg[m["course_id"]][m["student_id"]]
+            a[0] += m["obtained_score"]; a[1] += m["max_score"]
+    return {cid: {sid: pct(o, mx) for sid, (o, mx) in st.items() if mx} for cid, st in agg.items()}
+
+
+def _section_impl(svc, p: SubjectParams) -> dict:
+    run_id = _run(svc, p)
+    if not run_id:
+        return {"available": False, "note": "no completed run for this scope"}
+    courses = _match_courses(courses_for(svc, run_id, p.trimester), p.subject)
+    if not courses:
+        return not_found("subject")
+    cids = list(courses)
+    means = _student_means(scope_marks(svc, run_id, cids), set(cids))
+    att = attendance_for(svc, run_id, course_ids=cids)
+    att_by_course = {}
+    from collections import defaultdict
+    tmp = defaultdict(list)
+    for a in att:
+        tmp[a["course_id"]].append(a)
+    for cid, rows in tmp.items():
+        att_by_course[cid] = attendance_pct(rows)[2]
+    sections = []
+    for cid, meta in courses.items():
+        vals = list(means.get(cid, {}).values())
+        sections.append({"section": meta["code"].rsplit("_", 1)[-1], "students": len(vals),
+                         "mean_mark_pct": _mean(vals), "attendance_pct": att_by_course.get(cid)})
+    sections.sort(key=lambda s: (s["mean_mark_pct"] is None, -(s["mean_mark_pct"] or 0)))
+    subj = next(iter(courses.values()))["subject"]
+    spread = [s["mean_mark_pct"] for s in sections if s["mean_mark_pct"] is not None]
+    return {"subject": subj, "campus": p.campus, "batch": p.batch, "sections": sections,
+            "mark_spread_pts": (round(max(spread) - min(spread), 1) if len(spread) > 1 else 0),
+            "note": "Compare section means — a large spread can signal a teaching/marking difference."}
+
+
+def _assessment_impl(svc, p: ScopeParams) -> dict:
+    run_id = _run(svc, p)
+    if not run_id:
+        return {"available": False, "note": "no completed run for this scope"}
+    courses = courses_for(svc, run_id, p.trimester)
+    marks = scope_marks(svc, run_id, list(courses))
+    from collections import defaultdict
+    agg = defaultdict(list)
+    for m in marks:
+        if m.get("graded"):
+            agg[m.get("kind") or "other"].append(pct(m.get("obtained_score"), m.get("max_score")))
+    kinds = [{"assessment_kind": k, "graded_rows": len(v), "mean_pct": _mean(v),
+              "pass_rate_pct": (round(100 * sum(1 for x in v if x is not None and x >= 40)
+                                      / len([x for x in v if x is not None]), 1)
+                                if any(x is not None for x in v) else None)}
+             for k, v in agg.items()]
+    kinds.sort(key=lambda x: (x["mean_pct"] is None, x["mean_pct"] or 0))
+    return {"campus": p.campus, "batch": p.batch, "trimester": p.trimester or "all",
+            "by_assessment_kind": kinds,
+            "note": "Sorted weakest-mean first — which assessment types drag the cohort."}
+
+
+def _difficulty_impl(svc, p: ScopeParams) -> dict:
+    run_id = _run(svc, p)
+    if not run_id:
+        return {"available": False, "note": "no completed run for this scope"}
+    courses = courses_for(svc, run_id, p.trimester)
+    marks = scope_marks(svc, run_id, list(courses))
+    from collections import defaultdict
+    by_subj = defaultdict(lambda: defaultdict(lambda: [0.0, 0.0]))
+    zeros = defaultdict(int)
+    for m in marks:
+        subj = courses.get(m["course_id"], {}).get("subject")
+        if not subj or not m.get("graded"):
+            continue
+        if isinstance(m.get("obtained_score"), (int, float)) and isinstance(m.get("max_score"), (int, float)):
+            a = by_subj[subj][m["student_id"]]
+            a[0] += m["obtained_score"]; a[1] += m["max_score"]
+            if m["obtained_score"] == 0:
+                zeros[subj] += 1
+    rows = []
+    for subj, st in by_subj.items():
+        pcts = [pct(o, mx) for o, mx in st.values() if mx]
+        if not pcts:
+            continue
+        rows.append({"subject": subj, "students": len(pcts), "mean_mark_pct": _mean(pcts),
+                     "pass_rate_pct": round(100 * sum(1 for x in pcts if x >= 40) / len(pcts), 1),
+                     "recorded_zeros": zeros.get(subj, 0)})
+    rows.sort(key=lambda x: (x["pass_rate_pct"], -x["recorded_zeros"]))
+    return {"campus": p.campus, "batch": p.batch, "trimester": p.trimester or "all",
+            "hardest_first": rows[:20],
+            "note": "Ranked by lowest pass rate then most zeros — the toughest subjects."}
+
+
 def register(mcp, get_service):
     @mcp.tool(title="List Subjects", annotations=READONLY_ANNOTATIONS)
     async def list_subjects(params: ScopeParams) -> dict:
@@ -118,3 +215,39 @@ def register(mcp, get_service):
         RETURNS: mean_mark_pct, pass_rate_pct, cohort_attendance_pct, components[].
         """
         return _subject_impl(await get_service(), params)
+
+    @mcp.tool(title="Section Compare", annotations=READONLY_ANNOTATIONS)
+    async def section_compare(params: SubjectParams) -> dict:
+        """
+        WHAT: Compare the SECTIONS of one subject (A vs B vs C) — each section's mean mark % and
+        attendance, plus the spread. A teaching / marking fairness signal.
+        USE WHEN they say: 'compare sections of <subject>', 'is section A better than B', 'which
+        section scored higher in wealth management', 'section-wise'.
+        DO NOT USE WHEN they want the whole subject (subject_performance) or one student.
+        RETURNS: sections[] with mean_mark_pct + attendance, and mark_spread_pts.
+        """
+        return _section_impl(await get_service(), params)
+
+    @mcp.tool(title="Assessment Breakdown", annotations=READONLY_ANNOTATIONS)
+    async def assessment_breakdown(params: ScopeParams) -> dict:
+        """
+        WHAT: Cohort performance by ASSESSMENT KIND (quiz vs assignment vs project vs class
+        participation, etc.) — mean % and pass rate per kind, weakest first.
+        USE WHEN they say: 'how do students do on quizzes vs assignments', 'which assessment type is
+        weakest', 'assessment breakdown', 'are projects dragging scores'.
+        DO NOT USE WHEN they want one subject (subject_performance) or overall marks.
+        RETURNS: by_assessment_kind[] with mean_pct and pass_rate_pct.
+        """
+        return _assessment_impl(await get_service(), params)
+
+    @mcp.tool(title="Subject Difficulty", annotations=READONLY_ANNOTATIONS)
+    async def subject_difficulty(params: ScopeParams) -> dict:
+        """
+        WHAT: Subjects ranked hardest-first by lowest pass rate then most recorded zeros — the
+        curriculum pressure points.
+        USE WHEN they say: 'which subjects are hardest', 'lowest pass rate', 'where are students
+        failing most', 'toughest subjects', 'curriculum difficulty'.
+        DO NOT USE WHEN they want one subject's detail (subject_performance).
+        RETURNS: hardest_first[] with pass_rate_pct, mean_mark_pct, recorded_zeros.
+        """
+        return _difficulty_impl(await get_service(), params)

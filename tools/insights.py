@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 from annotations import READONLY_ANNOTATIONS
 from guardrails import clamp_limit, not_found
 from tools.common import (accuracy_rows, attendance_for, attendance_pct, cohort_rollup,
-                          courses_for, find_student, marks_for, pct)
+                          courses_for, find_student, marks_for, pct, scope_marks)
 
 
 class StudentParams(BaseModel):
@@ -184,7 +184,56 @@ def _watchlist_impl(svc, p: ScopeParams) -> dict:
             "students": out[:clamp_limit(p.limit)]}
 
 
+def _declining_impl(svc, p: ScopeParams) -> dict:
+    if svc.campus_scope(p.campus) == []:
+        return not_found("scope")
+    run_id = svc.latest_run(p.campus, p.batch)
+    if not run_id:
+        return {"available": False, "note": "no completed run"}
+    all_courses = courses_for(svc, run_id)  # all trimesters — trajectory needs history
+    tri_of = {cid: m["trimester"] for cid, m in all_courses.items()}
+    names = {r["student_id"]: r.get("student_name") for r in
+             (svc.client.table("students").select("student_id,student_name")
+              .eq("run_id", run_id).limit(100000).execute()).data or []}
+    marks = scope_marks(svc, run_id, list(all_courses))
+    agg = defaultdict(lambda: defaultdict(lambda: [0.0, 0.0]))  # student -> tri -> [obt,max]
+    for m in marks:
+        t = tri_of.get(m["course_id"])
+        if t and m.get("graded") and isinstance(m.get("obtained_score"), (int, float)) \
+                and isinstance(m.get("max_score"), (int, float)):
+            a = agg[m["student_id"]][t]
+            a[0] += m["obtained_score"]; a[1] += m["max_score"]
+    out = []
+    for sid, tris in agg.items():
+        series = [(t, pct(o, mx)) for t, (o, mx) in sorted(tris.items()) if mx]
+        if len(series) < 2:
+            continue
+        delta = round(series[-1][1] - series[-2][1], 1)
+        if delta >= -3:  # only genuine declines
+            continue
+        out.append({"student_id": sid, "name": names.get(sid, sid), "drop_pts": delta,
+                    "from_trimester": series[-2][0], "to_trimester": series[-1][0],
+                    "previous_mark_pct": series[-2][1], "latest_mark_pct": series[-1][1]})
+    out.sort(key=lambda x: x["drop_pts"])
+    from guardrails import clamp_limit as _cl
+    return {"campus": p.campus, "batch": p.batch, "declining_count": len(out),
+            "students": out[:_cl(p.limit)],
+            "note": "Students whose latest-trimester marks fell 3+ points vs the prior term."}
+
+
 def register(mcp, get_service):
+    @mcp.tool(title="Declining Students", annotations=READONLY_ANNOTATIONS)
+    async def declining_students(params: ScopeParams) -> dict:
+        """
+        WHAT: Students whose marks DROPPED most from the previous trimester to the latest — the
+        cohort-wide early-warning list that a snapshot can never show.
+        USE WHEN they say: 'who is slipping', 'whose marks dropped', 'who got worse this term',
+        'declining students', 'biggest drops'.
+        DO NOT USE WHEN they want one student's trend (student_trajectory) or the at-risk list.
+        RETURNS: declining students ranked by drop_pts, with from/to trimester + marks.
+        """
+        return _declining_impl(await get_service(), params)
+
     @mcp.tool(title="Student Trajectory", annotations=READONLY_ANNOTATIONS)
     async def student_trajectory(params: StudentParams) -> dict:
         """
