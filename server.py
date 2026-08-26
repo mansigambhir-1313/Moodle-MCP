@@ -14,6 +14,7 @@ from starlette.routing import Route
 
 from annotations import READONLY_ANNOTATIONS
 from config import settings, validate_config
+from security import TransportGuard, bearer_of, build_middleware, resolve_principal
 from supabase_client import create_service
 from tools import accuracy, analytics, at_risk, insights, reports, students, subjects
 
@@ -32,16 +33,21 @@ INSTRUCTIONS = (
     "such asks to the programme office pipeline."
 )
 
-mcp = FastMCP(name=settings.server_name, version=settings.server_version, instructions=INSTRUCTIONS)
+# mask_error_details=True: unexpected exceptions are returned to the caller as a generic message
+# (full detail logged server-side only), so a Supabase/PostgREST error never leaks the project URL,
+# schema, or the service-role key. Explicitly-raised ToolError messages (rate limit / access
+# denied) are still shown — that is the safe, intentional error channel.
+mcp = FastMCP(name=settings.server_name, version=settings.server_version,
+              instructions=INSTRUCTIONS, mask_error_details=True)
+mcp.add_middleware(build_middleware(settings.rate_limit, settings.rate_window_seconds))
 
 
 async def get_authenticated_service():
-    """Single auth dependency: verify the bearer token → a campus-scoped service. Fail-closed."""
+    """Single auth dependency: verify the bearer token → a campus-scoped service. Fail-closed.
+    Uses the cached, constant-time resolver. This is defense-in-depth behind TransportGuard,
+    which already rejects tokenless /mcp requests with a 401."""
     from fastmcp.server.dependencies import get_http_headers
-    headers = get_http_headers() or {}
-    auth = headers.get("authorization") or headers.get("Authorization") or ""
-    token = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
-    principal = settings.tokens().get(token) if token else None
+    principal = resolve_principal(bearer_of(get_http_headers() or {}))
     if not principal:
         raise PermissionError("missing or invalid access token")
     return create_service(principal)
@@ -73,8 +79,14 @@ app = mcp.http_app()
 
 
 async def health_check(request: Request) -> JSONResponse:
-    return JSONResponse({"status": "ok", "service": settings.server_name,
-                         "version": settings.server_version})
+    # Minimal by design — no server name/version, to avoid fingerprinting.
+    return JSONResponse({"status": "ok"})
 
 
 app.routes.insert(0, Route("/health", health_check, methods=["GET"]))
+
+# Transport gate: reject tokenless /mcp requests with a real 401 (blocks unauthenticated tool
+# enumeration) before JSON-RPC. /health stays open. Wraps the whole ASGI app, lifespan included.
+app = TransportGuard(app, max_body=settings.max_body_bytes,
+                     ip_rate_limit=settings.ip_rate_limit,
+                     ip_window=settings.rate_window_seconds)

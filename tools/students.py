@@ -12,16 +12,16 @@ from tools.common import (attendance_for, attendance_pct, courses_for, find_stud
 
 
 class RosterParams(BaseModel):
-    campus: str = Field(description="campus (within your grant)")
-    batch: str = Field(description="batch e.g. '2024-26'")
-    section: str | None = Field(default=None, description="optional section/group filter")
-    query: str | None = Field(default=None, description="optional name / enrolment-id fragment")
-    limit: int = Field(default=50, description="max students, 1-50")
+    campus: str = Field(description="campus (within your grant)", max_length=64)
+    batch: str = Field(description="batch e.g. '2024-26'", max_length=64)
+    section: str | None = Field(default=None, description="optional section/group filter", max_length=64)
+    query: str | None = Field(default=None, description="optional name / enrolment-id fragment", max_length=120)
+    limit: int = Field(default=50, description="max students, 1-50", ge=1, le=50)
 
 
 class StudentParams(BaseModel):
-    student_id: str = Field(description="enrolment id, e.g. 'JJ24PG099'")
-    trimester: str | None = Field(default=None, description="restrict to one trimester's subjects")
+    student_id: str = Field(description="enrolment id, e.g. 'JJ24PG099'", max_length=64)
+    trimester: str | None = Field(default=None, description="restrict to one trimester's subjects", max_length=8)
 
 
 def _roster_impl(svc, p: RosterParams) -> dict:

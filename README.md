@@ -148,8 +148,12 @@ boot check on the Supabase vars.
 | `MCP_ADMIN_TOKEN` | Single all-campus break-glass token (alternative to `MCP_TOKENS`) | You generate it |
 | `REPORT_PUBLIC_BASE_URL` | Base for report links (default `https://reports.tryrehearsal.ai`) | — |
 | `MCP_SERVER_BASE_URL` | Public URL of this service (optional) | Render dashboard |
+| `MCP_RATE_LIMIT` | Tool calls allowed per token per window (default `90`) | — |
+| `MCP_RATE_WINDOW_SECONDS` | Rate-limit window in seconds (default `60`) | — |
 
-**All logging goes to stderr; log lines never contain token contents or PII.**
+Malformed `MCP_TOKENS` (bad JSON or wrong shape) **fails the boot loudly** rather than silently
+locking everyone out; short tokens log a warning. **All logging goes to stderr; audit lines record
+who / which tool / campus scope / outcome and never contain token contents, student ids, or PII.**
 
 ---
 
@@ -251,9 +255,40 @@ to `MCP_TOKENS`, redeploy, hand them their token.
 
 ---
 
-## Safety invariants
+## Security & safety
 
-Read-only forever · campus-scope every query · uniform `{"found": false}` misses (no existence
-oracle) · secret stripping (run ids / storage keys / hashes / emails never leave the server) ·
-service-role key server-side only · response budgets + paging · graceful degradation (never 500 the
-turn) · bounded caches only (OOM-safe). Detail in `docs/ARCHITECTURE.md` §3, §11.
+Two enforcement layers wrap every tool centrally (`security.py`), so a new tool can't
+accidentally run unauthenticated or leak a stack trace:
+
+- **`TransportGuard` (ASGI):** every `/mcp` request is, before JSON-RPC: **body-capped**
+  (`MCP_MAX_BODY_BYTES` → 413), **per-IP rate-limited** (`MCP_IP_RATE_LIMIT` → 429, fail-open) to
+  blunt unauthenticated floods / token guessing, and **auth-gated** — a valid bearer or real
+  **HTTP 401 + `WWW-Authenticate`**, blocking tool enumeration. `/health` (now just `{"status":"ok"}`,
+  no version fingerprint) stays open; CORS preflight passes.
+- **`GuardMiddleware` (FastMCP `on_call_tool`):** per-call **rate limit** keyed by the **token**
+  (hashed, so two tokens sharing a name don't share a budget), **audit log** (who/tool/scope/outcome,
+  no secrets/PII), and a **catch-all error boundary** — combined with `mask_error_details=True`, any
+  unexpected exception returns a generic message while full detail is logged server-side only (no
+  Supabase URL / schema / key leak).
+
+Token resolution is **cached and constant-time** (`hmac.compare_digest`). Tokens support an optional
+per-token **`expires`** (ISO date/datetime) so a grant can be **revoked by date without a redeploy**.
+Boot is **fail-closed**: malformed token config, a token `<24` chars (unless `ALLOW_WEAK_TOKENS`), or
+a bad `expires` format all crash the process loudly.
+
+### Least-privilege DB role
+The MCP reads with the key in `SUPABASE_SERVICE_ROLE_KEY`. Prefer a **SELECT-only** credential over
+the full `service_role` key (which bypasses RLS and can write): apply
+[`sql/2026-08-26_reporting_readonly_role.sql`](sql/2026-08-26_reporting_readonly_role.sql), then mint
+a JWT with `{"role":"reporting_readonly"}` signed with the project JWT secret and set it as the key.
+PostgREST then runs every query as a role that **physically cannot write**. The server logs a warning
+at boot whenever it detects a full `service_role` key still in use.
+
+**Data invariants:** read-only forever · campus-scope every query · uniform `{"found": false}`
+misses (no existence oracle) · explicit field projections + secret stripping (run ids / storage
+keys / hashes / emails never leave the server) · service-role key server-side only · response
+budgets + paging · bounded caches only (OOM-safe). Detail in `docs/ARCHITECTURE.md` §3, §11.
+
+Verified in testing: tokenless → 401; bad token → 401; a `jaipur`-scoped token cannot read `noida`
+cohort data (`available:false`) and a cross-campus student is a uniform miss; the rate limiter
+blocks past the window; an internal exception is masked from the client but logged server-side.
