@@ -12,14 +12,14 @@ from tools.common import (accuracy_rows, attendance_for, attendance_pct, cohort_
 
 
 class StudentParams(BaseModel):
-    student_id: str = Field(description="enrolment id, e.g. 'JJ24PG099'")
+    student_id: str = Field(description="enrolment id, e.g. 'JJ24PG099'", max_length=64)
 
 
 class ScopeParams(BaseModel):
-    campus: str = Field(description="campus (within your grant)")
-    batch: str = Field(description="batch e.g. '2024-26'")
-    trimester: str | None = Field(default=None, description="latest trimester if omitted")
-    limit: int = Field(default=25, description="max students where applicable, 1-50")
+    campus: str = Field(description="campus (within your grant)", max_length=64)
+    batch: str = Field(description="batch e.g. '2024-26'", max_length=64)
+    trimester: str | None = Field(default=None, description="latest trimester if omitted", max_length=8)
+    limit: int = Field(default=25, description="max students where applicable, 1-50", ge=1, le=50)
 
 
 # --- per-trimester series for one student ------------------------------------

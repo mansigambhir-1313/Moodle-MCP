@@ -12,16 +12,16 @@ _ACC = "student_id,overall_pct,overall_label,agent_accuracy,panel_verdict,panel_
 
 
 class StudentAcc(BaseModel):
-    student_id: str = Field(description="enrolment id")
-    campus: str | None = None
-    batch: str | None = None
+    student_id: str = Field(description="enrolment id", max_length=64)
+    campus: str | None = Field(default=None, max_length=64)
+    batch: str | None = Field(default=None, max_length=64)
 
 
 class ScopeAcc(BaseModel):
-    campus: str | None = None
-    batch: str | None = None
-    trimester: str | None = None
-    limit: int = Field(default=25, description="max rows for flagged list, 1-50")
+    campus: str | None = Field(default=None, max_length=64)
+    batch: str | None = Field(default=None, max_length=64)
+    trimester: str | None = Field(default=None, max_length=8)
+    limit: int = Field(default=25, description="max rows for flagged list, 1-50", ge=1, le=50)
 
 
 def _mean(xs):

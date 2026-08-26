@@ -8,14 +8,15 @@ from tools.common import cohort_rollup, courses_for
 
 
 class RiskParams(BaseModel):
-    campus: str = Field(description="campus (within your grant)")
-    batch: str = Field(description="batch e.g. '2024-26'")
-    trimester: str | None = Field(default=None, description="restrict to one trimester")
-    limit: int = Field(default=25, description="max students, 1-50")
+    campus: str = Field(description="campus (within your grant)", max_length=64)
+    batch: str = Field(description="batch e.g. '2024-26'", max_length=64)
+    trimester: str | None = Field(default=None, description="restrict to one trimester", max_length=8)
+    limit: int = Field(default=25, description="max students, 1-50", ge=1, le=50)
 
 
 class AttParams(RiskParams):
-    threshold: float = Field(default=75.0, description="attendance % below which to flag (default 75)")
+    threshold: float = Field(default=75.0, description="attendance % below which to flag (default 75)",
+                             ge=0, le=100)
 
 
 def _rollup(svc, p):

@@ -10,24 +10,24 @@ _CARD = "student_id,full_name,first_name,campus,batch,trimester,status,above_ave
 
 
 class SearchParams(BaseModel):
-    query: str | None = Field(default=None, description="name or enrolment-id fragment to match")
-    campus: str | None = Field(default=None, description="campus filter (within your grant)")
-    batch: str | None = Field(default=None, description="batch e.g. '2024-26'")
-    trimester: str | None = Field(default=None, description="trimester number e.g. '5'")
-    limit: int = Field(default=20, description="max cards, 1-50")
+    query: str | None = Field(default=None, description="name or enrolment-id fragment to match", max_length=120)
+    campus: str | None = Field(default=None, description="campus filter (within your grant)", max_length=64)
+    batch: str | None = Field(default=None, description="batch e.g. '2024-26'", max_length=64)
+    trimester: str | None = Field(default=None, description="trimester number e.g. '5'", max_length=8)
+    limit: int = Field(default=20, description="max cards, 1-50", ge=1, le=50)
 
 
 class ReportParams(BaseModel):
-    student_id: str = Field(description="enrolment id, e.g. 'JJ24PG099'")
-    campus: str | None = None
-    batch: str | None = None
-    trimester: str | None = None
+    student_id: str = Field(description="enrolment id, e.g. 'JJ24PG099'", max_length=64)
+    campus: str | None = Field(default=None, max_length=64)
+    batch: str | None = Field(default=None, max_length=64)
+    trimester: str | None = Field(default=None, max_length=8)
 
 
 class StatusParams(BaseModel):
-    campus: str = Field(description="campus")
-    batch: str = Field(description="batch e.g. '2024-26'")
-    trimester: str = Field(description="trimester number")
+    campus: str = Field(description="campus", max_length=64)
+    batch: str = Field(description="batch e.g. '2024-26'", max_length=64)
+    trimester: str = Field(description="trimester number", max_length=8)
 
 
 def _search_impl(svc, p: SearchParams) -> dict:

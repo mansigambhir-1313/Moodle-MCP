@@ -52,6 +52,12 @@ class MoodleService:
 
     # --- pinned run -------------------------------------------------------
     def latest_run(self, campus: str, batch: str, purpose: str | None = None):
+        # Defense-in-depth: the service-role key bypasses RLS, so a run_id is the
+        # only thing binding downstream (run_id-keyed) queries to a campus. Refuse
+        # to resolve a run for a campus outside the caller's grant, so a tool that
+        # forgets the explicit campus_scope() guard can never leak another campus.
+        if self.campus_scope(campus) == []:
+            return None
         purpose = purpose or settings.report_purpose
         key = (campus, batch, purpose)
         hit = _run_cache.get(key)

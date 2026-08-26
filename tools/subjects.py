@@ -10,13 +10,13 @@ from tools.common import (attendance_for, attendance_pct, courses_for, marks_for
 
 
 class ScopeParams(BaseModel):
-    campus: str = Field(description="campus (within your grant)")
-    batch: str = Field(description="batch e.g. '2024-26'")
-    trimester: str | None = Field(default=None, description="restrict to one trimester")
+    campus: str = Field(description="campus (within your grant)", max_length=64)
+    batch: str = Field(description="batch e.g. '2024-26'", max_length=64)
+    trimester: str | None = Field(default=None, description="restrict to one trimester", max_length=8)
 
 
 class SubjectParams(ScopeParams):
-    subject: str = Field(description="subject-name fragment, e.g. 'Wealth Management'")
+    subject: str = Field(description="subject-name fragment, e.g. 'Wealth Management'", max_length=120)
 
 
 def _run(svc, p):
