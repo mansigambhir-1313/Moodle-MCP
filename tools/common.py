@@ -15,6 +15,18 @@ def course_trimester(code: str):
     return parts[2] if len(parts) >= 3 and parts[2].isdigit() else None
 
 
+def course_section(code: str):
+    """Section token from a course code. Robust across both layouts:
+      old 4-field 'subjnum_batch_trim_SECTION'        e.g. 30503_26_3_C     -> 'C'
+      new 5-field 'subjnum_batch_trim_SECTION_ABBR'   e.g. 20201_27_1_A_AFB -> 'A'
+    Section is always field 4 ([3]); the older format just has it as the last field.
+    (Using rsplit('_')[-1] grabbed the subject abbreviation on the new format.)"""
+    parts = (code or "").split("_")
+    if len(parts) >= 4:
+        return parts[3]
+    return parts[-1] if parts and parts[0] else None
+
+
 def clean_subject(name: str) -> str:
     """'Business Research Methods - C' -> 'Business Research Methods' (strip the section suffix)."""
     n = (name or "").strip()
