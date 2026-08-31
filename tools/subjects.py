@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 
 from annotations import READONLY_ANNOTATIONS
 from guardrails import not_found
-from tools.common import (attendance_for, attendance_pct, courses_for, marks_for, pct, scope_marks)
+from tools.common import (attendance_for, attendance_pct, course_section, courses_for, marks_for, pct, scope_marks)
 
 
 class ScopeParams(BaseModel):
@@ -127,7 +127,7 @@ def _section_impl(svc, p: SubjectParams) -> dict:
     sections = []
     for cid, meta in courses.items():
         vals = list(means.get(cid, {}).values())
-        sections.append({"section": meta["code"].rsplit("_", 1)[-1], "students": len(vals),
+        sections.append({"section": course_section(meta["code"]), "students": len(vals),
                          "mean_mark_pct": _mean(vals), "attendance_pct": att_by_course.get(cid)})
     sections.sort(key=lambda s: (s["mean_mark_pct"] is None, -(s["mean_mark_pct"] or 0)))
     subj = next(iter(courses.values()))["subject"]

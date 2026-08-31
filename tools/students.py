@@ -72,10 +72,16 @@ def _subject_rollup(courses, marks, att):
     for cid, meta in courses.items():
         cms = by_course_marks.get(cid, [])
         graded = [m for m in cms if m.get("graded")]
-        tot_obt = sum(float(m["obtained_score"]) for m in graded
-                      if isinstance(m.get("obtained_score"), (int, float)))
-        tot_max = sum(float(m["max_score"]) for m in graded
-                      if isinstance(m.get("max_score"), (int, float)))
+        # Only components with BOTH a recorded score AND max count toward the subject
+        # total. The end-term (__total__ / kind ET) row carries an obtained score but a
+        # NULL max, so summing obtained and max independently would add to the numerator
+        # without the denominator and push the % past 100. Pair them (mirrors
+        # cohort_rollup, so get_student and marks_overview stay consistent).
+        scored = [m for m in graded
+                  if isinstance(m.get("obtained_score"), (int, float))
+                  and isinstance(m.get("max_score"), (int, float))]
+        tot_obt = sum(float(m["obtained_score"]) for m in scored)
+        tot_max = sum(float(m["max_score"]) for m in scored)
         present, total, apct = attendance_pct(by_course_att.get(cid, []))
         if not cms and not by_course_att.get(cid):
             continue
