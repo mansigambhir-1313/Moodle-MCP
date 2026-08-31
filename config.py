@@ -15,6 +15,11 @@ class Settings(BaseSettings):
     # Supabase (read-only service role — server-side only, never exposed to the host)
     supabase_url: str = Field(default="", alias="SUPABASE_URL")
     supabase_service_role_key: str = Field(default="", alias="SUPABASE_SERVICE_ROLE_KEY")
+    # Anon/publishable key. When set, it is used as the API-gateway `apikey` while
+    # SUPABASE_SERVICE_ROLE_KEY is attached as the bearer — so the DB key can be a
+    # least-privilege custom-role JWT (e.g. reporting_readonly) that the gateway
+    # would otherwise reject as an apikey. Leave empty to use the DB key for both.
+    supabase_anon_key: str = Field(default="", alias="SUPABASE_ANON_KEY")
 
     # Access: a single admin token (all campuses) and/or a JSON map token -> {name, campuses}
     mcp_admin_token: str = Field(default="", alias="MCP_ADMIN_TOKEN")

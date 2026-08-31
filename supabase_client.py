@@ -18,10 +18,27 @@ _client_singleton: Client | None = None
 
 
 def _client() -> Client:
+    """One process-wide client. When an anon/publishable key is configured, use it
+    as the gateway `apikey` and attach the DB key as the bearer so PostgREST runs
+    as the DB key's role. This is required for a least-privilege custom-role JWT
+    (e.g. reporting_readonly): Supabase's gateway only accepts the registered
+    anon/service key as `apikey`, so a custom JWT must ride in the Authorization
+    header, never as the apikey. With no anon key set we keep the old behaviour
+    (DB key used for both) so a service_role deployment is unchanged."""
     global _client_singleton
     if _client_singleton is None:
-        _client_singleton = create_client(
-            settings.supabase_url, settings.supabase_service_role_key)
+        db_key = settings.supabase_service_role_key
+        anon = settings.supabase_anon_key
+        if anon:
+            c = create_client(settings.supabase_url, anon)
+            try:
+                c.postgrest.auth(db_key)   # bearer -> PostgREST runs as this role
+            except AttributeError as exc:  # pragma: no cover - very old supabase-py
+                raise RuntimeError(
+                    "supabase-py lacks postgrest.auth — upgrade to >=2.5.0") from exc
+            _client_singleton = c
+        else:
+            _client_singleton = create_client(settings.supabase_url, db_key)
     return _client_singleton
 
 
