@@ -42,7 +42,7 @@ INSTRUCTIONS = (
 # Workspace as the first gate). Without OAuth creds, legacy static tokens still work.
 auth_provider = None
 if settings.oauth_enabled():
-    from fastmcp.server.auth.providers.google import GoogleProvider
+    from oauth_compat import TolerantGoogleProvider as GoogleProvider
     _google_kwargs = dict(
         client_id=settings.google_oauth_client_id,
         client_secret=settings.google_oauth_client_secret,
@@ -120,6 +120,12 @@ async def health_check(request: Request) -> JSONResponse:
 
 
 app.routes.insert(0, Route("/health", health_check, methods=["GET"]))
+
+# URL tolerance: hosts (and users typing connector URLs) reach the MCP endpoint whether
+# they enter .../mcp or just the bare domain — "/" is rewritten to "/mcp", and the root
+# OAuth discovery document to its /mcp-scoped variant. See oauth_compat.PathAliases.
+from oauth_compat import PathAliases
+app = PathAliases(app)
 
 # Transport gate. Static-token mode: reject tokenless /mcp requests with a real 401 (blocks
 # unauthenticated tool enumeration) before JSON-RPC; /health stays open. OAuth mode: FastMCP's

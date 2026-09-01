@@ -279,11 +279,107 @@ def phase5_oauth_signin():
     importlib.reload(security)
 
 
+def phase6_oauth_compat():
+    print("\nPHASE 6 — OAuth compatibility (URL aliases / DCR-race tolerance)")
+    import asyncio
+    import time as _time
+
+    from oauth_compat import PATH_ALIASES, PathAliases, TolerantGoogleProvider
+
+    # --- PathAliases: exact rewrites only, everything else untouched ----------
+    seen = {}
+
+    async def inner(scope, receive, send):
+        seen["path"] = scope.get("path")
+
+    aliased = PathAliases(inner)
+
+    def run(path, typ="http"):
+        seen.clear()
+        asyncio.run(aliased({"type": typ, "path": path}, None, None))
+        return seen.get("path")
+
+    check("bare / rewritten to /mcp", run("/") == "/mcp")
+    check("root protected-resource doc rewritten",
+          run("/.well-known/oauth-protected-resource")
+          == "/.well-known/oauth-protected-resource/mcp")
+    check("path-inserted auth-server doc rewritten",
+          run("/.well-known/oauth-authorization-server/mcp")
+          == "/.well-known/oauth-authorization-server")
+    check("/mcp untouched", run("/mcp") == "/mcp")
+    check("/health untouched", run("/health") == "/health")
+    check("non-http scope untouched", run("/", typ="lifespan") == "/")
+
+    # --- TolerantGoogleProvider: client mismatch tolerated only with PKCE -----
+    provider = TolerantGoogleProvider(
+        client_id="x.apps.googleusercontent.com", client_secret="GOCSPX-x",
+        base_url="https://mcp.example.com",
+        required_scopes=["openid"],
+    )
+
+    class FakeStore:
+        def __init__(self, model):
+            self.model, self.deleted = model, False
+
+        async def get(self, key):
+            return self.model
+
+        async def delete(self, key):
+            self.deleted = True
+
+    class CodeModel:
+        client_id = "client-A"
+        redirect_uri = "https://claude.ai/api/mcp/auth_callback"
+        scopes = ["openid"]
+        expires_at = _time.time() + 300
+        code_challenge = "challenge123"
+
+    class ClientB:
+        client_id = "client-B"
+
+    class ClientA:
+        client_id = "client-A"
+
+    provider._code_store = FakeStore(CodeModel())
+    same = asyncio.run(provider.load_authorization_code(ClientA(), "code1"))
+    check("same-client exchange loads code",
+          same is not None and same.code_challenge == "challenge123")
+    cross = asyncio.run(provider.load_authorization_code(ClientB(), "code1"))
+    check("cross-client exchange tolerated WITH PKCE (race fix)",
+          cross is not None and cross.client_id == "client-B"
+          and cross.code_challenge == "challenge123")
+
+    class NoPkce(CodeModel):
+        code_challenge = ""
+
+    provider._code_store = FakeStore(NoPkce())
+    check("cross-client exchange REJECTED without PKCE",
+          asyncio.run(provider.load_authorization_code(ClientB(), "code1")) is None)
+
+    class Expired(CodeModel):
+        expires_at = _time.time() - 1
+
+    store = FakeStore(Expired())
+    provider._code_store = store
+    check("expired code rejected and deleted",
+          asyncio.run(provider.load_authorization_code(ClientA(), "code1")) is None
+          and store.deleted)
+
+    class EmptyStore(FakeStore):
+        async def get(self, key):
+            return None
+
+    provider._code_store = EmptyStore(None)
+    check("unknown code rejected",
+          asyncio.run(provider.load_authorization_code(ClientA(), "nope")) is None)
+
+
 if __name__ == "__main__":
     phase1_latest_run_scope()
     phase2_key_role_detection()
     phase3_transport_guard()
     phase4_credential_hygiene()
     phase5_oauth_signin()
+    phase6_oauth_compat()
     print(f"\n{PASS} passed, {FAIL} failed")
     sys.exit(1 if FAIL else 0)

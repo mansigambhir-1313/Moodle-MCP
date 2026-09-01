@@ -113,3 +113,19 @@ Notes:
 - Sign-ins from outside `OAUTH_ALLOWED_DOMAINS` (or unverified emails) are rejected
   per-call with "Access denied", even if Google issued a token.
 - `whoami` now returns the signed-in email — use it to verify scoping.
+
+### Robustness for all users (built-in)
+
+- **Either URL works**: `https://<render-url>/mcp` and the bare `https://<render-url>`
+  both reach the MCP endpoint (`oauth_compat.PathAliases`), so a connector added
+  without the `/mcp` path no longer fails with "no MCP server was found".
+- **Claude.ai's DCR race is tolerated**: Claude's backend may register several OAuth
+  clients concurrently and redeem the authorization code as a different client than
+  it authorized with. `oauth_compat.TolerantGoogleProvider` accepts that exchange
+  when the code is PKCE-bound (verifier, redirect_uri, expiry, single-use all still
+  enforced by the framework); codes without PKCE keep the strict client check.
+- **Keep-warm**: `.github/workflows/keep-warm.yml` pings `/health` every ~10 min so
+  the free Render instance rarely spins down (cold starts + in-memory OAuth state
+  loss become rare). If the server does restart, issued tokens stay valid
+  (`OAUTH_JWT_SIGNING_KEY`), and a user whose refresh fails is simply sent through
+  Google sign-in again.
