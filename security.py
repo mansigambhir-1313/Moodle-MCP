@@ -81,6 +81,51 @@ def bearer_of(headers: dict) -> str:
     return auth[7:].strip() if auth.lower().startswith("bearer ") else ""
 
 
+# --- OAuth (Google sign-in) principal resolution -----------------------------
+def principal_from_claims(claims: dict):
+    """Verified Google claims -> campus-scoped principal, or None (fail-closed).
+    Gate 1: email present and verified. Gate 2: domain in OAUTH_ALLOWED_DOMAINS
+    (jaipuria.ac.in). Grant: MCP_FACULTY override per email, else the configured
+    default ('all' unless narrowed)."""
+    from config import settings
+    email = str(claims.get("email") or "").strip().lower()
+    if not email or "@" not in email:
+        return None
+    verified = claims.get("email_verified")
+    if verified is None:  # Google userinfo v2 spells it verified_email
+        verified = (claims.get("google_user_data") or {}).get("verified_email")
+    if verified is False:
+        return None
+    domain = email.rsplit("@", 1)[1]
+    if domain not in settings.oauth_allowed_domains():
+        log.warning("oauth sign-in rejected: domain %r not allowed", domain)
+        return None
+    override = settings.faculty().get(email)
+    if override is not None:
+        return {"name": override.get("name") or claims.get("name") or email,
+                "email": email, "campuses": override.get("campuses")}
+    default = settings.oauth_default_campuses()
+    if default == "deny":
+        log.warning("oauth sign-in rejected: %s not in MCP_FACULTY "
+                    "(OAUTH_DEFAULT_CAMPUSES=none)", email)
+        return None
+    return {"name": claims.get("name") or email, "email": email, "campuses": default}
+
+
+def resolve_oauth_principal():
+    """Principal behind the FastMCP-issued OAuth token on the current request, or
+    None when there is no (valid) OAuth token in context. Never raises."""
+    try:
+        from fastmcp.server.dependencies import get_access_token
+        token = get_access_token()
+    except Exception:  # noqa: BLE001 - no auth context / no token
+        return None
+    if token is None:
+        return None
+    claims = getattr(token, "claims", None) or {}
+    return principal_from_claims(claims)
+
+
 # --- bounded sliding-window rate limiter -------------------------------------
 class RateLimiter:
     """Per-key sliding window. Bounded in memory (LRU-evicts idle keys) — OOM-safe."""
@@ -152,11 +197,18 @@ class TransportGuard:
     error so the transport itself never wedges a legitimate request."""
 
     def __init__(self, app, open_paths=("/health",), max_body: int = 262144,
-                 ip_rate_limit: int = 240, ip_window: float = 60.0):
+                 ip_rate_limit: int = 240, ip_window: float = 60.0,
+                 check_bearer: bool = True):
+        # check_bearer=False (OAuth mode): FastMCP's auth layer owns token
+        # validation and the 401 + WWW-Authenticate resource-metadata handshake
+        # the MCP OAuth discovery flow depends on, and the OAuth endpoints
+        # (/.well-known/*, /register, /authorize, /token, /auth/callback) must be
+        # reachable pre-auth. Body cap + per-IP limiting stay on either way.
         self.app = app
         self.open_paths = set(open_paths)
         self.max_body = max_body
         self.ip_limiter = RateLimiter(ip_rate_limit, ip_window) if ip_rate_limit else None
+        self.check_bearer = check_bearer
 
     async def __call__(self, scope, receive, send):
         if scope.get("type") != "http":
@@ -184,7 +236,9 @@ class TransportGuard:
             except Exception:  # noqa: BLE001
                 pass
 
-        # 3. auth
+        # 3. auth (static-token mode only; OAuth mode delegates to FastMCP auth)
+        if not self.check_bearer:
+            return await self.app(scope, receive, send)
         token = bearer_of(headers)
         if resolve_principal(token) is None:
             return await _send_json(send, 401, {"error": "unauthorized"},
@@ -202,7 +256,8 @@ def build_middleware(rate_limit: int, window: float):
 
     def _principal():
         try:
-            return resolve_principal(bearer_of(get_http_headers() or {}))
+            return resolve_oauth_principal() \
+                or resolve_principal(bearer_of(get_http_headers() or {}))
         except Exception:  # noqa: BLE001 - never let auth-introspection break a call
             return None
 

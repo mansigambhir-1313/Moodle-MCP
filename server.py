@@ -14,7 +14,8 @@ from starlette.routing import Route
 
 from annotations import READONLY_ANNOTATIONS
 from config import settings, validate_config
-from security import TransportGuard, bearer_of, build_middleware, resolve_principal
+from security import (TransportGuard, bearer_of, build_middleware, resolve_principal,
+                      resolve_oauth_principal)
 from supabase_client import create_service
 from tools import accuracy, analytics, at_risk, insights, reports, students, subjects
 
@@ -33,21 +34,53 @@ INSTRUCTIONS = (
     "such asks to the programme office pipeline."
 )
 
+# Interactive auth: when Google OAuth credentials are configured, serve the full MCP
+# OAuth flow (discovery metadata, dynamic client registration, Google consent) so hosts
+# like Claude.ai sign each faculty member in with their jaipuria.ac.in Google account —
+# no manual bearer token. Domain + campus scoping are enforced per-call in
+# security.principal_from_claims (and the Google OAuth app should be "Internal" to the
+# Workspace as the first gate). Without OAuth creds, legacy static tokens still work.
+auth_provider = None
+if settings.oauth_enabled():
+    from fastmcp.server.auth.providers.google import GoogleProvider
+    _google_kwargs = dict(
+        client_id=settings.google_oauth_client_id,
+        client_secret=settings.google_oauth_client_secret,
+        base_url=settings.server_base_url,
+        required_scopes=["openid",
+                         "https://www.googleapis.com/auth/userinfo.email",
+                         "https://www.googleapis.com/auth/userinfo.profile"],
+    )
+    if settings.oauth_jwt_signing_key:
+        _google_kwargs["jwt_signing_key"] = settings.oauth_jwt_signing_key
+    _domains = settings.oauth_allowed_domains()
+    if len(_domains) == 1:
+        # Google's `hd` param pre-filters the account picker to the Workspace domain.
+        # It is a UX hint, not enforcement — principal_from_claims enforces the domain.
+        _google_kwargs["extra_authorize_params"] = {"hd": _domains[0]}
+    auth_provider = GoogleProvider(**_google_kwargs)
+    log.info("Google OAuth sign-in enabled (allowed domains: %s)",
+             ", ".join(settings.oauth_allowed_domains()))
+
 # mask_error_details=True: unexpected exceptions are returned to the caller as a generic message
 # (full detail logged server-side only), so a Supabase/PostgREST error never leaks the project URL,
 # schema, or the service-role key. Explicitly-raised ToolError messages (rate limit / access
 # denied) are still shown — that is the safe, intentional error channel.
 mcp = FastMCP(name=settings.server_name, version=settings.server_version,
-              instructions=INSTRUCTIONS, mask_error_details=True)
+              instructions=INSTRUCTIONS, mask_error_details=True, auth=auth_provider)
 mcp.add_middleware(build_middleware(settings.rate_limit, settings.rate_window_seconds))
 
 
 async def get_authenticated_service():
-    """Single auth dependency: verify the bearer token → a campus-scoped service. Fail-closed.
-    Uses the cached, constant-time resolver. This is defense-in-depth behind TransportGuard,
-    which already rejects tokenless /mcp requests with a 401."""
+    """Single auth dependency → a campus-scoped service. Fail-closed.
+    OAuth mode: FastMCP has already verified the token; we map its Google claims to a
+    principal (jaipuria.ac.in domain gate + campus grant) — a verified token from an
+    unapproved account still gets PermissionError here. Legacy mode: constant-time
+    static-token lookup, defense-in-depth behind TransportGuard's 401."""
     from fastmcp.server.dependencies import get_http_headers
-    principal = resolve_principal(bearer_of(get_http_headers() or {}))
+    principal = resolve_oauth_principal() if settings.oauth_enabled() else None
+    if principal is None:
+        principal = resolve_principal(bearer_of(get_http_headers() or {}))
     if not principal:
         raise PermissionError("missing or invalid access token")
     return create_service(principal)
@@ -62,8 +95,11 @@ async def whoami() -> dict:
     RETURNS: name, campuses (list or 'all').
     """
     svc = await get_authenticated_service()
-    return {"name": svc.principal.get("name", "faculty"),
-            "campuses": svc.allowed_campuses if svc.allowed_campuses is not None else "all"}
+    out = {"name": svc.principal.get("name", "faculty"),
+           "campuses": svc.allowed_campuses if svc.allowed_campuses is not None else "all"}
+    if svc.principal.get("email"):
+        out["email"] = svc.principal["email"]
+    return out
 
 
 # Tool registration — DATA-FIRST modules first, then the secondary report/accuracy layer.
@@ -85,8 +121,11 @@ async def health_check(request: Request) -> JSONResponse:
 
 app.routes.insert(0, Route("/health", health_check, methods=["GET"]))
 
-# Transport gate: reject tokenless /mcp requests with a real 401 (blocks unauthenticated tool
-# enumeration) before JSON-RPC. /health stays open. Wraps the whole ASGI app, lifespan included.
+# Transport gate. Static-token mode: reject tokenless /mcp requests with a real 401 (blocks
+# unauthenticated tool enumeration) before JSON-RPC; /health stays open. OAuth mode: FastMCP's
+# auth layer owns token validation and the 401/WWW-Authenticate discovery handshake, and its
+# OAuth endpoints must be reachable pre-auth — so only the body cap + per-IP limit apply here.
 app = TransportGuard(app, max_body=settings.max_body_bytes,
                      ip_rate_limit=settings.ip_rate_limit,
-                     ip_window=settings.rate_window_seconds)
+                     ip_window=settings.rate_window_seconds,
+                     check_bearer=not settings.oauth_enabled())

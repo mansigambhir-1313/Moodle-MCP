@@ -17,5 +17,17 @@ services:
         sync: false
       - key: MCP_SERVER_BASE_URL
         sync: false
+      - key: GOOGLE_OAUTH_CLIENT_ID
+        sync: false
+      - key: GOOGLE_OAUTH_CLIENT_SECRET
+        sync: false
+      - key: OAUTH_ALLOWED_DOMAINS
+        value: jaipuria.ac.in
+      - key: OAUTH_DEFAULT_CAMPUSES
+        value: all
+      - key: MCP_FACULTY
+        sync: false
+      - key: OAUTH_JWT_SIGNING_KEY
+        sync: false
       - key: REPORT_PUBLIC_BASE_URL
         value: https://reports.tryrehearsal.ai
