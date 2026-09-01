@@ -251,6 +251,7 @@ def build_middleware(rate_limit: int, window: float):
     from fastmcp.exceptions import ToolError
     from fastmcp.server.dependencies import get_http_headers
     from fastmcp.server.middleware import Middleware
+    from pydantic import ValidationError
 
     limiter = RateLimiter(rate_limit, window)
 
@@ -293,6 +294,15 @@ def build_middleware(rate_limit: int, window: float):
                 return result
             except ToolError:
                 raise  # already a clean, caller-safe message
+            except ValidationError as e:
+                # Caller sent bad/missing parameters. Tell them WHICH — this is
+                # their own input, not an internal detail — so an agent can fix
+                # the call instead of uselessly retrying a "server error".
+                first = (e.errors() or [{}])[0]
+                loc = ".".join(str(x) for x in first.get("loc", ())) or "params"
+                audit(name, principal, ok=False, note="bad_params")
+                raise ToolError(f"Invalid parameters — {loc}: "
+                                f"{first.get('msg', 'validation failed')}")
             except PermissionError:
                 audit(name, principal, ok=False, note="unauthorized")
                 raise ToolError(MSG_DENIED)

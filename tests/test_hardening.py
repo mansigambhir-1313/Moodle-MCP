@@ -373,6 +373,36 @@ def phase6_oauth_compat():
     check("unknown code rejected",
           asyncio.run(provider.load_authorization_code(ClientA(), "nope")) is None)
 
+    # --- validation errors surface as clean parameter messages ---------------
+    from pydantic import BaseModel, Field
+
+    from fastmcp import Client, FastMCP
+    from security import build_middleware
+
+    m = FastMCP(name="t-val")
+    m.add_middleware(build_middleware(90, 60))
+
+    class VP(BaseModel):
+        campus: str = Field(max_length=8)
+
+    @m.tool
+    def demo(params: VP) -> dict:
+        return {"ok": True}
+
+    async def val_case(args):
+        async with Client(m) as c:
+            r = await c.call_tool("demo", args, raise_on_error=False)
+            return r.content[0].text if r.content else ""
+
+    missing = asyncio.run(val_case({}))
+    bad = asyncio.run(val_case({"params": {"campus": "way-too-long-value"}}))
+    good = asyncio.run(val_case({"params": {"campus": "noida"}}))
+    check("missing params -> named validation error",
+          missing.startswith("Invalid parameters"))
+    check("bad value -> names the offending field",
+          bad.startswith("Invalid parameters") and "campus" in bad)
+    check("valid params still succeed", "ok" in good)
+
 
 if __name__ == "__main__":
     phase1_latest_run_scope()
