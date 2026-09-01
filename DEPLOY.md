@@ -68,3 +68,48 @@ Set `MCP_TOKENS` (JSON) so each faculty sees only their campus:
 MCP_TOKENS={"tok_indore":{"name":"Indore TNP","campuses":["indore"]},"tok_office":{"name":"Programme Office","campuses":null}}
 ```
 A campus outside a token's grant returns `found:false` — verified.
+
+## E. Google sign-in for faculty (recommended — no manual tokens)
+
+With OAuth configured, hosts like Claude.ai onboard every user through the standard
+MCP OAuth flow: the user adds the connector URL, clicks "Connect", signs in with their
+**@jaipuria.ac.in** Google account, and is in. No bearer token is ever handed out.
+(Without this, Claude.ai shows *"Couldn't register with Moodle's sign-in service"*
+and falls back to asking each user for a token.)
+
+### 1. Create the Google OAuth client (one-time, ~5 min)
+
+In [Google Cloud Console](https://console.cloud.google.com/) under the **Jaipuria
+Workspace** account:
+
+1. Create/select a project → **APIs & Services → OAuth consent screen**.
+   - User type: **Internal** ← this alone restricts sign-in to jaipuria.ac.in accounts
+     at Google's side (the server also enforces the domain independently).
+2. **Credentials → Create credentials → OAuth client ID → Web application**.
+   - Authorized redirect URI: `https://<render-url>/auth/callback`
+3. Copy the **Client ID** (`….apps.googleusercontent.com`) and **Client secret** (`GOCSPX-…`).
+
+### 2. Set env vars on Render
+
+| Var | Value |
+|---|---|
+| `GOOGLE_OAUTH_CLIENT_ID` | the client ID |
+| `GOOGLE_OAUTH_CLIENT_SECRET` | the client secret |
+| `MCP_SERVER_BASE_URL` | `https://<render-url>` (must be the public https URL) |
+| `OAUTH_JWT_SIGNING_KEY` | `python3 -c "import secrets;print(secrets.token_urlsafe(48))"` — keeps logins valid across redeploys |
+| `OAUTH_ALLOWED_DOMAINS` | `jaipuria.ac.in` (default) |
+| `OAUTH_DEFAULT_CAMPUSES` | `all` (default) \| `none` (only emails in `MCP_FACULTY`) \| `["jaipur"]` |
+| `MCP_FACULTY` | optional per-email grants, e.g. `{"tnp.indore@jaipuria.ac.in":{"name":"Indore TNP","campuses":["indore"]}}` |
+
+### 3. Connect
+
+In Claude.ai / Claude Desktop: **Settings → Connectors → Add custom connector** →
+URL `https://<render-url>/mcp` → **Connect** → Google sign-in. Done.
+
+Notes:
+- When OAuth is enabled, static `MCP_TOKENS`/`MCP_ADMIN_TOKEN` are **not** accepted on
+  `/mcp` (FastMCP validates its own issued tokens); remove them or keep them only for
+  a separate non-OAuth deployment.
+- Sign-ins from outside `OAUTH_ALLOWED_DOMAINS` (or unverified emails) are rejected
+  per-call with "Access denied", even if Google issued a token.
+- `whoami` now returns the signed-in email — use it to verify scoping.

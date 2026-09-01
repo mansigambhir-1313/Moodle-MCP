@@ -214,10 +214,76 @@ def phase4_credential_hygiene():
     importlib.reload(cfgmod)
 
 
+def phase5_oauth_signin():
+    print("\nPHASE 5 — Google OAuth sign-in (domain gate / grants / boot validation)")
+    import importlib
+
+    import config as cfgmod
+
+    def reload_with(**env):
+        for k, v in env.items():
+            os.environ[k] = v
+        importlib.reload(cfgmod)
+
+    def raises(fn):
+        try:
+            fn()
+            return False
+        except RuntimeError:
+            return True
+
+    reload_with(SUPABASE_URL="https://x.supabase.co", SUPABASE_SERVICE_ROLE_KEY="k",
+                GOOGLE_OAUTH_CLIENT_ID="id.apps.googleusercontent.com",
+                GOOGLE_OAUTH_CLIENT_SECRET="GOCSPX-x",
+                MCP_SERVER_BASE_URL="https://mcp.example.com",
+                OAUTH_JWT_SIGNING_KEY="k" * 32)
+    import security
+    importlib.reload(security)
+    from security import principal_from_claims
+
+    p = principal_from_claims({"email": "Prof@Jaipuria.ac.in", "name": "Prof"})
+    check("jaipuria.ac.in email accepted (case-insensitive)",
+          p is not None and p["email"] == "prof@jaipuria.ac.in")
+    check("default grant is all campuses", p is not None and p["campuses"] is None)
+    check("outside domain rejected", principal_from_claims({"email": "x@gmail.com"}) is None)
+    check("missing email rejected", principal_from_claims({"name": "X"}) is None)
+    check("unverified email rejected (userinfo v2 spelling)",
+          principal_from_claims({"email": "p@jaipuria.ac.in",
+                                 "google_user_data": {"verified_email": False}}) is None)
+
+    reload_with(MCP_FACULTY='{"dean@jaipuria.ac.in": {"name": "Dean", "campuses": ["jaipur"]}}',
+                OAUTH_DEFAULT_CAMPUSES="none")
+    p = principal_from_claims({"email": "dean@jaipuria.ac.in"})
+    check("MCP_FACULTY override narrows campuses",
+          p is not None and p["campuses"] == ["jaipur"])
+    check("unlisted email denied when OAUTH_DEFAULT_CAMPUSES=none",
+          principal_from_claims({"email": "other@jaipuria.ac.in"}) is None)
+
+    reload_with(OAUTH_DEFAULT_CAMPUSES='["noida"]', MCP_FACULTY="")
+    p = principal_from_claims({"email": "other@jaipuria.ac.in"})
+    check("JSON-list default grant applies", p is not None and p["campuses"] == ["noida"])
+
+    # Boot validation: half-configured OAuth and a non-https base URL must fail closed.
+    reload_with(OAUTH_DEFAULT_CAMPUSES="all", GOOGLE_OAUTH_CLIENT_SECRET="")
+    check("half-configured OAuth rejected at boot", raises(cfgmod.validate_config))
+    reload_with(GOOGLE_OAUTH_CLIENT_SECRET="GOCSPX-x", MCP_SERVER_BASE_URL="")
+    check("OAuth without https base_url rejected at boot", raises(cfgmod.validate_config))
+    reload_with(MCP_SERVER_BASE_URL="https://mcp.example.com", OAUTH_ALLOWED_DOMAINS=" ")
+    check("empty allowed-domains rejected at boot", raises(cfgmod.validate_config))
+
+    for k in ("GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_SECRET", "MCP_SERVER_BASE_URL",
+              "OAUTH_ALLOWED_DOMAINS", "OAUTH_DEFAULT_CAMPUSES", "MCP_FACULTY",
+              "OAUTH_JWT_SIGNING_KEY"):
+        os.environ.pop(k, None)
+    importlib.reload(cfgmod)
+    importlib.reload(security)
+
+
 if __name__ == "__main__":
     phase1_latest_run_scope()
     phase2_key_role_detection()
     phase3_transport_guard()
     phase4_credential_hygiene()
+    phase5_oauth_signin()
     print(f"\n{PASS} passed, {FAIL} failed")
     sys.exit(1 if FAIL else 0)
