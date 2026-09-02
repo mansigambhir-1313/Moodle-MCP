@@ -68,7 +68,10 @@ class Settings(BaseSettings):
     # Transport hardening: max /mcp request body, and a per-IP pre-auth request cap
     # per window (blunts unauthenticated floods / token-guessing before auth).
     max_body_bytes: int = Field(default=262144, alias="MCP_MAX_BODY_BYTES")
-    ip_rate_limit: int = Field(default=240, alias="MCP_IP_RATE_LIMIT")
+    # 1200/min default: hundreds of faculty on a campus share ONE egress IP (NAT),
+    # so a lower cap throttles legitimate use. Still a real flood brake (20 rps),
+    # and the per-principal limit above bounds each individual account.
+    ip_rate_limit: int = Field(default=1200, alias="MCP_IP_RATE_LIMIT")
     # Reject access tokens shorter than this at boot (set ALLOW_WEAK_TOKENS to skip).
     allow_weak_tokens: bool = Field(default=False, alias="ALLOW_WEAK_TOKENS")
 
