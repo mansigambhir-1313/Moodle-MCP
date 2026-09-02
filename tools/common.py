@@ -1,9 +1,8 @@
 """Shared query helpers — read-only, campus-scoped. Data-first: the primary source is the raw
-Moodle tables (students, courses, enrolments, marks, attendance_sessions); reports/accuracy are a
-secondary layer."""
+Moodle tables (students, courses, enrolments, marks, attendance_sessions); the generated report
+is a secondary layer. (The report-QA/accuracy layer is intentionally NOT exposed here.)"""
 
 CATALOG = "student_reports"
-ACCURACY = "report_accuracy"
 MARKS = "marks"
 ATTENDANCE = "attendance_sessions"
 
@@ -171,7 +170,7 @@ def attendance_pct(rows) -> tuple:
     return present, total, (round(100 * present / total, 1) if total else None)
 
 
-# --- report / accuracy (secondary) -------------------------------------------
+# --- generated report (secondary) --------------------------------------------
 def report_rows(svc, *, campus=None, batch=None, trimester=None, cols="*",
                 status="ready", limit=100000):
     q = svc.client.table(CATALOG).select(cols)
@@ -194,19 +193,6 @@ def one_report(svc, student_id, *, campus=None, batch=None, trimester=None, cols
         q = q.eq("trimester", str(trimester))
     rows = (q.order("generated_at", desc=True).limit(1).execute()).data or []
     return rows[0] if rows else None
-
-
-def accuracy_rows(svc, *, campus=None, batch=None, trimester=None, label=None, cols="*",
-                  limit=100000):
-    q = svc.client.table(ACCURACY).select(cols)
-    q = svc.apply_campus(q, requested=campus)
-    if batch:
-        q = q.eq("batch", batch)
-    if trimester:
-        q = q.eq("trimester", str(trimester))
-    if label:
-        q = q.eq("overall_label", label)
-    return (q.limit(limit).execute()).data or []
 
 
 def student_label(row: dict) -> dict:

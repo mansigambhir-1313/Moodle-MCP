@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field
 from annotations import READONLY_ANNOTATIONS
 from config import settings
 from guardrails import clamp_limit, enrolled_no_data, not_found, truncate
-from tools.common import accuracy_rows, one_report, report_rows, student_label
+from tools.common import one_report, report_rows, student_label
 
 _CARD = "student_id,full_name,first_name,campus,batch,trimester,status,above_average_count,strongest_subject,subjects_count,personal_pattern_kind"
 
@@ -52,10 +52,6 @@ def _report_impl(svc, p: ReportParams) -> dict:
     pkt = row.get("evidence_packet") or {}
     subjects = pkt.get("subjects", [])
     att = pkt.get("attendance_summary", {})
-    acc = accuracy_rows(svc, campus=row.get("campus"), batch=row.get("batch"),
-                        trimester=row.get("trimester"),
-                        cols="student_id,overall_pct,overall_label,agent_accuracy,panel_verdict")
-    acc = next((a for a in acc if a.get("student_id") == p.student_id), None)
     actions = [{"title": a.get("title"), "instruction": a.get("instruction") or a.get("detail")}
                for a in (narr.get("actions") or [])[:3]]
     pp = narr.get("personal_pattern") or {}
@@ -80,10 +76,6 @@ def _report_impl(svc, p: ReportParams) -> dict:
                       "class_average": s.get("class_marks_average"),
                       "delta": s.get("score_delta"), "attendance": s.get("student_attendance")}
                      for s in subjects],
-        "accuracy": ({"overall_pct": acc.get("overall_pct"), "label": acc.get("overall_label"),
-                      "agent_accuracy": acc.get("agent_accuracy"),
-                      "panel_verdict": acc.get("panel_verdict")} if acc else
-                     {"note": "not yet audited"}),
         "report_link_base": settings.report_public_base_url,
     }
 

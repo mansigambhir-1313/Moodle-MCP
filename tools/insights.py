@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 
 from annotations import READONLY_ANNOTATIONS
 from guardrails import clamp_limit, enrolled_no_data, not_found
-from tools.common import (accuracy_rows, attendance_for, attendance_pct, cohort_rollup,
+from tools.common import (attendance_for, attendance_pct, cohort_rollup,
                           courses_for, find_student, marks_for, pct, scope_marks)
 
 
@@ -101,9 +101,6 @@ def _360_impl(svc, p: StudentParams) -> dict:
         flags.append(f"attendance {me['attendance_pct']}% (below 75%)")
     if trend["label"] == "declining":
         flags.append(f"marks declining ({trend['delta']} pts)")
-    acc = accuracy_rows(svc, campus=campus, batch=batch,
-                        cols="student_id,overall_pct,overall_label")
-    acc = next((a for a in acc if a.get("student_id") == p.student_id), None)
     return {"found": True,
             "student": {"student_id": p.student_id, "name": stu.get("student_name"),
                         "campus": campus, "batch": batch, "section": stu.get("section_group")},
@@ -113,9 +110,7 @@ def _360_impl(svc, p: StudentParams) -> dict:
             "attendance_percentile": _rank(me.get("attendance_pct"), att_pop),
             "trend": trend, "trajectory": series,
             "risk_flags": flags or ["none"],
-            "recorded_zeros": me.get("zeros", []),
-            "report_accuracy": ({"overall_pct": acc.get("overall_pct"),
-                                 "label": acc.get("overall_label")} if acc else None)}
+            "recorded_zeros": me.get("zeros", [])}
 
 
 def _pulse_impl(svc, p: ScopeParams) -> dict:
@@ -221,7 +216,110 @@ def _declining_impl(svc, p: ScopeParams) -> dict:
             "note": "Students whose latest-trimester marks fell 3+ points vs the prior term."}
 
 
+class OverallReportParams(BaseModel):
+    campus: str | None = Field(default=None, description="one campus within your grant; omit for all granted campuses", max_length=64)
+    batch: str | None = Field(default=None, description="one batch e.g. '2024-26'; omit for all graded batches in scope", max_length=64)
+    trimester: str | None = Field(default=None, description="latest per batch if omitted", max_length=8)
+    include_students: bool = Field(default=True, description="include the per-student rows (set false for just the aggregates)")
+    limit: int = Field(default=50, description="max per-student rows this page, 1-200", ge=1, le=200)
+    offset: int = Field(default=0, description="row offset for paging the per-student list", ge=0)
+
+
+def _dist(marks):
+    return {"below_40": sum(1 for x in marks if x < 40),
+            "40_to_60": sum(1 for x in marks if 40 <= x < 60),
+            "60_to_75": sum(1 for x in marks if 60 <= x < 75),
+            "75_plus": sum(1 for x in marks if x >= 75)}
+
+
+def _overall_report_impl(svc, p: OverallReportParams) -> dict:
+    """Campus-wide performance report: aggregate KPIs for every graded batch in scope PLUS
+    a per-student roll (each student's overall marks %, attendance %, and risk flag). Built
+    from the raw marks/attendance — not per-student LLM generation — so it covers everyone
+    in one call. For one student's narrative report use create_report / get_student_report."""
+    from tools.common import graded_scopes
+    if p.campus and svc.campus_scope(p.campus) == []:
+        return not_found("scope")
+    scopes = graded_scopes(svc, campus=p.campus, batch=p.batch)
+    if not scopes:
+        where = (p.campus or "your campuses") + (f"/{p.batch}" if p.batch else "")
+        return {"found": False,
+                "note": f"No graded data is available in {where} yet to report on."}
+    per_batch, students, all_marks, all_att = [], [], [], []
+    for campus, batch, run_id in scopes:
+        roll = cohort_rollup(svc, run_id, courses_for(svc, run_id, p.trimester))
+        marks = [r["mark_pct"] for r in roll.values() if r["mark_pct"] is not None]
+        att = [r["attendance_pct"] for r in roll.values() if r["attendance_pct"] is not None]
+        all_marks += marks
+        all_att += att
+        at_risk = 0
+        for sid, r in roll.items():
+            flag = None
+            if r["zeros"]:
+                flag = f"{len(r['zeros'])} recorded zero(s)"
+            elif r["attendance_pct"] is not None and r["attendance_pct"] < 65:
+                flag = f"attendance {r['attendance_pct']}%"
+            elif r["mark_pct"] is not None and r["mark_pct"] < 40:
+                flag = f"marks {r['mark_pct']}% (below pass)"
+            if flag:
+                at_risk += 1
+            students.append({"student_id": sid, "name": r.get("name"),
+                             "campus": campus, "batch": batch,
+                             "overall_mark_pct": r["mark_pct"],
+                             "overall_attendance_pct": r["attendance_pct"],
+                             "risk_flag": flag})
+        mean = lambda xs: round(sum(xs) / len(xs), 1) if xs else None  # noqa: E731
+        per_batch.append({"campus": campus, "batch": batch,
+                          "trimester": p.trimester or "latest", "students": len(roll),
+                          "mean_mark_pct": mean(marks), "mean_attendance_pct": mean(att),
+                          "pass_rate_pct": (round(100 * sum(1 for x in marks if x >= 40) / len(marks), 1)
+                                            if marks else None),
+                          "at_risk_count": at_risk, "mark_distribution": _dist(marks)})
+    mean = lambda xs: round(sum(xs) / len(xs), 1) if xs else None  # noqa: E731
+    # weakest first so the people who need attention are on page one
+    students.sort(key=lambda s: (s["overall_mark_pct"] is None, s["overall_mark_pct"] or 0,
+                                 s["campus"], s["batch"]))
+    total = len(students)
+    page = students[p.offset:p.offset + p.limit] if p.include_students else []
+    out = {"found": True,
+           "scope": {"campus": p.campus or "all granted campuses", "batch": p.batch or "all graded batches"},
+           "overall": {"students": total,
+                       "mean_mark_pct": mean(all_marks),
+                       "mean_attendance_pct": mean(all_att),
+                       "pass_rate_pct": (round(100 * sum(1 for x in all_marks if x >= 40) / len(all_marks), 1)
+                                         if all_marks else None),
+                       "at_risk_count": sum(b["at_risk_count"] for b in per_batch),
+                       "mark_distribution": _dist(all_marks)},
+           "per_batch": per_batch}
+    if p.include_students:
+        out["student_count"] = total
+        out["showing"] = len(page)
+        out["students"] = page
+        if p.offset + p.limit < total:
+            out["has_more"] = True
+            out["next_offset"] = p.offset + p.limit
+    return out
+
+
 def register(mcp, get_service):
+    @mcp.tool(title="Campus Performance Report", annotations=READONLY_ANNOTATIONS)
+    async def campus_performance_report(params: OverallReportParams) -> dict:
+        """
+        WHAT: The overall performance report for EVERY student in a campus (or all your
+        campuses) in one call — campus/batch KPI aggregates (mean marks, attendance, pass rate,
+        at-risk count, mark distribution) PLUS a per-student roll: each student's overall marks
+        %, attendance %, and risk flag, weakest first. Built from raw marks/attendance, so it
+        covers the whole cohort at once (no per-student generation).
+        USE WHEN they say: 'overall performance report for all students in noida', 'how is the
+        whole campus doing with a student-by-student breakdown', 'give me everyone's numbers'.
+        DO NOT USE WHEN they want ONE student's narrative report (use create_report /
+        get_student_report) or just the headline KPIs (use cohort_pulse).
+        RETURNS: overall{...}, per_batch[...], and a paginated students[] list (student_count,
+        showing, has_more, next_offset — keep paging with offset for the full roster).
+        Set include_students=false for aggregates only.
+        """
+        return _overall_report_impl(await get_service(), params)
+
     @mcp.tool(title="Declining Students", annotations=READONLY_ANNOTATIONS)
     async def declining_students(params: ScopeParams) -> dict:
         """
@@ -250,12 +348,12 @@ def register(mcp, get_service):
     async def student_360(params: StudentParams) -> dict:
         """
         WHAT: One-call complete view of a student — latest marks/attendance, cohort percentile rank,
-        trajectory + trend, risk flags, recorded zeros, and report-accuracy. The dashboard's
+        trajectory + trend, risk flags, and recorded zeros. The dashboard's
         student drawer.
         USE WHEN they say: 'give me everything on <id>', 'full picture of <name>', 'student profile',
         'how is <id> doing overall and vs the class'.
         DO NOT USE WHEN they want only marks/attendance/trajectory (use the focused tools).
-        RETURNS: latest stats, percentiles, trend, trajectory, risk_flags, report_accuracy.
+        RETURNS: latest stats, percentiles, trend, trajectory, risk_flags.
         """
         return _360_impl(await get_service(), params)
 
