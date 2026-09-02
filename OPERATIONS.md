@@ -147,3 +147,17 @@ agent URL, so no faculty token can steer that request to another route.
 **NAT headroom**: ~500 faculty on campus share egress IPs, so the pre-auth
 per-IP limit is raised via `MCP_IP_RATE_LIMIT=1200` (per minute) on Render;
 per-principal limits (90/min) still bound each individual account.
+
+## OAuth sessions now survive deploys (2026-09-02)
+
+FastMCP's OAuth state (client registrations, token mappings, refresh metadata)
+is persisted in Supabase table `mcp_oauth_kv` via `oauth_storage.py`, replacing
+the ephemeral disk default — so a deploy/restart no longer logs anyone out.
+Every value is Fernet-encrypted with a key derived from `OAUTH_JWT_SIGNING_KEY`
+(never stored in the DB): a DB leak yields ciphertext only. The
+reporting_readonly role has CRUD on this one table and stays SELECT-only on
+all student data.
+
+**If you ever rotate `OAUTH_JWT_SIGNING_KEY`**: old rows become undecryptable —
+clear them first (`delete from mcp_oauth_kv;`), then rotate; everyone signs in
+once more. Expired rows are purged opportunistically (~1 in 50 writes).

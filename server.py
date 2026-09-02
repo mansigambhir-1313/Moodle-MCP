@@ -57,6 +57,17 @@ if settings.oauth_enabled():
     )
     if settings.oauth_jwt_signing_key:
         _google_kwargs["jwt_signing_key"] = settings.oauth_jwt_signing_key
+    # Persist OAuth state (DCR clients, token mappings) in Supabase so deploys
+    # and restarts no longer log every faculty member out. Values are Fernet-
+    # encrypted with a key derived from OAUTH_JWT_SIGNING_KEY (see oauth_storage).
+    from oauth_storage import build_oauth_storage
+    _oauth_store = build_oauth_storage(settings)
+    if _oauth_store is not None:
+        _google_kwargs["client_storage"] = _oauth_store
+        log.info("OAuth state persistence enabled (Supabase-backed, encrypted)")
+    else:
+        log.warning("OAuth state persistence NOT enabled (missing Supabase/JWT "
+                    "settings) — deploys will log users out")
     _domains = settings.oauth_allowed_domains()
     if len(_domains) == 1:
         # Google's `hd` param pre-filters the account picker to the Workspace domain.
