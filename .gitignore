@@ -2,3 +2,7 @@
 __pycache__/
 *.pyc
 .venv/
+
+# local screenshots / images (never commit — may contain PII)
+WhatsApp Image *.jpeg
+*.jpeg
