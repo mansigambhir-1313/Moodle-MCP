@@ -61,3 +61,33 @@ curl -s https://moodle-mcp-f6do.onrender.com/health          # {"status":"ok"}
 curl -s -o /dev/null -w '%{http_code}\n' -X POST \
   https://moodle-mcp-f6do.onrender.com/mcp                    # 401
 ```
+
+## Keep-warm — measured reality (2026-09-01)
+GitHub schedules `*/10` crons best-effort and throttles them hard on low-activity
+repos: over 2026-08-31 → 09-01 the keep-warm workflow actually ran ~5 times in 21
+hours (gaps of 3-8 hours), so the free instance still spins down and faculty still
+hit ~30-60s cold starts (observed as 9-22s 401/504 responses mid-morning). If cold
+starts matter, use an external pinger (UptimeRobot / cron-job.org, 5-min interval,
+same unauthenticated `/health`) or move the service to a paid always-on plan. The
+Action stays as a harmless backstop.
+
+## Deploys log every user out (known limitation)
+FastMCP's OAuth proxy stores dynamic client registrations, JTI mappings and
+upstream tokens in an encrypted DiskStore under the app user's home directory —
+which is ephemeral on Render. Every deploy or restart therefore invalidates all
+issued tokens ("JTI mapping not found" → 401 invalid_token) and each connected
+host must re-run Google sign-in. `OAUTH_JWT_SIGNING_KEY` keeps the JWTs
+*verifiable* but not the JTI map, so it does not prevent this. Fix when it becomes
+painful: pass a persistent `client_storage` (Redis, or a Postgres-backed
+key-value store — the Supabase project itself can host the table) into the
+provider, or accept re-login as the cost of a deploy.
+
+## Env hygiene
+- With OAuth enabled, `MCP_TOKENS` / `MCP_ADMIN_TOKEN` are never consulted on
+  `/mcp` (FastMCP rejects foreign bearers first). Remove them from Render so they
+  are not live secrets sitting unused in env.
+- `OAUTH_DEFAULT_CAMPUSES=all` (the code default) + empty `MCP_FACULTY` means
+  every verified `jaipuria.ac.in` Google account — students and alumni included,
+  if they hold domain accounts — can read every campus's marks. The server now
+  logs a boot warning for this combination; the faculty-only configuration is
+  `OAUTH_DEFAULT_CAMPUSES=none` plus explicit `MCP_FACULTY` entries.

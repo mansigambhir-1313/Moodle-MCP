@@ -16,8 +16,8 @@ from starlette.routing import Route
 
 from annotations import READONLY_ANNOTATIONS
 from config import settings, validate_config
-from security import (TransportGuard, bearer_of, build_middleware, resolve_principal,
-                      resolve_oauth_principal)
+from security import (TransportGuard, bearer_of, build_middleware, quiet_noisy_loggers,
+                      resolve_principal, resolve_oauth_principal)
 from supabase_client import create_service
 from tools import accuracy, actions, analytics, at_risk, insights, reports, students, subjects
 
@@ -25,6 +25,7 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
                     stream=sys.stderr)
 log = logging.getLogger("moodle-mcp")
+quiet_noisy_loggers()  # httpx at INFO would log Google tokeninfo URLs incl. live access tokens
 
 validate_config()
 

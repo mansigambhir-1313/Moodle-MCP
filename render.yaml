@@ -1,39 +1,46 @@
+# Render blueprint — kept in sync with the LIVE service (srv-da61ppjncjis73aer1hg,
+# https://moodle-mcp-f6do.onrender.com). The deployed service runs the Dockerfile on the
+# free plan; this file previously described a python-runtime/starter service that never
+# matched production, so a re-deploy from blueprint would have built a different service.
 services:
   - type: web
     name: jaipuria-moodle-mcp
-    runtime: python
-    plan: starter
-    buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn server:app --host 0.0.0.0 --port $PORT
-    healthCheckPath: /health
+    runtime: docker            # live service builds ./Dockerfile (python:3.12-slim)
+    plan: free                 # current prod; upgrade to starter to remove cold starts
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health   # was unset on the live service — enables zero-downtime deploys
     envVars:
       - key: SUPABASE_URL
         sync: false
-      - key: SUPABASE_SERVICE_ROLE_KEY
+      - key: SUPABASE_SERVICE_ROLE_KEY   # prefer the SELECT-only reporting_readonly JWT
         sync: false
-      - key: MCP_ADMIN_TOKEN
-        sync: false
-      - key: MCP_TOKENS
-        sync: false
-      - key: MCP_SERVER_BASE_URL
+      - key: SUPABASE_ANON_KEY           # required when the DB key is a custom-role JWT
         sync: false
       - key: GOOGLE_OAUTH_CLIENT_ID
         sync: false
       - key: GOOGLE_OAUTH_CLIENT_SECRET
         sync: false
-      - key: OAUTH_ALLOWED_DOMAINS
-        value: jaipuria.ac.in
-      - key: OAUTH_DEFAULT_CAMPUSES
-        value: all
-      - key: MCP_FACULTY
-        sync: false
       - key: OAUTH_JWT_SIGNING_KEY
         sync: false
+      - key: MCP_SERVER_BASE_URL
+        sync: false
+      - key: OAUTH_ALLOWED_DOMAINS
+        value: jaipuria.ac.in
+      # Fail-closed default: only emails listed in MCP_FACULTY get access. The code
+      # default is "all" for backwards compatibility, but "all" means every verified
+      # domain account (students included, if they hold accounts) reads every campus.
+      - key: OAUTH_DEFAULT_CAMPUSES
+        value: none
+      - key: MCP_FACULTY
+        sync: false
+      # On-demand report generation (create_report tool); leave unset to disable.
       - key: AGENT_API_BASE
-        value: https://reports.tryrehearsal.ai
+        sync: false
       - key: AGENT_ADMIN_USER
         sync: false
       - key: AGENT_ADMIN_PASS
         sync: false
       - key: REPORT_PUBLIC_BASE_URL
         value: https://reports.tryrehearsal.ai
+      # MCP_TOKENS / MCP_ADMIN_TOKEN are intentionally absent: in OAuth mode FastMCP
+      # rejects static bearers before any handler runs, so they are dead secrets in env.

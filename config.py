@@ -222,6 +222,13 @@ def validate_config() -> None:
                 if not (campuses is None or isinstance(campuses, list)):
                     raise RuntimeError("MCP_FACULTY 'campuses' must be null (all) "
                                        "or a list of campuses")
+        if settings.oauth_default_campuses() is None and not settings.faculty():
+            log.warning(
+                "OAUTH_DEFAULT_CAMPUSES is 'all' and MCP_FACULTY is empty — EVERY verified "
+                "%s Google account (including students or alumni, if they hold domain "
+                "accounts) can read every campus's marks and attendance. For faculty-only "
+                "access set OAUTH_DEFAULT_CAMPUSES=none and list faculty in MCP_FACULTY.",
+                ", ".join(settings.oauth_allowed_domains()))
         if not settings.oauth_jwt_signing_key:
             log.warning("OAUTH_JWT_SIGNING_KEY not set — issued OAuth tokens are "
                         "invalidated on every restart/redeploy (users must re-login)")
