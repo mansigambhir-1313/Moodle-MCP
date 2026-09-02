@@ -404,6 +404,124 @@ def phase6_oauth_compat():
     check("valid params still succeed", "ok" in good)
 
 
+def phase7_create_report():
+    print("\nPHASE 7 — create_report (scope gate / agent proxy / config validation)")
+    import asyncio
+    import importlib
+
+    import config as cfgmod
+    from fastmcp.exceptions import ToolError
+
+    import tools.actions as actions
+    from tools.actions import CreateReportParams, _create_impl
+
+    class Svc:
+        def __init__(self, allowed):
+            self.allowed = allowed
+
+        def campus_scope(self, requested):
+            if self.allowed is None:
+                return [requested] if requested else None
+            return [requested] if requested in self.allowed else []
+
+    def run(svc, monkeypatch_client=None, **kw):
+        if monkeypatch_client is not None:
+            actions.httpx.AsyncClient = monkeypatch_client
+        p = CreateReportParams(**{"campus": "noida", "batch": "2025-27",
+                                  "student_id": "JN25PG067", **kw})
+        return asyncio.run(_create_impl(svc, p))
+
+    def raises(fn, exc):
+        try:
+            fn()
+            return False
+        except exc:
+            return True
+
+    # 1. campus outside grant -> PermissionError (masked to 'Access denied' upstream)
+    check("campus outside grant denied",
+          raises(lambda: run(Svc(["jaipur"])), PermissionError))
+
+    # 2. unconfigured backend -> clean ToolError, no HTTP attempted
+    for k in ("AGENT_API_BASE", "AGENT_ADMIN_USER", "AGENT_ADMIN_PASS"):
+        os.environ.pop(k, None)
+    importlib.reload(cfgmod)
+    actions.settings = cfgmod.settings
+    check("unconfigured backend -> clean ToolError",
+          raises(lambda: run(Svc(None)), ToolError))
+
+    # 3. configured: agent responses are proxied, internals filtered
+    os.environ.update({"AGENT_API_BASE": "https://agent.example.com",
+                       "AGENT_ADMIN_USER": "u", "AGENT_ADMIN_PASS": "p"})
+    importlib.reload(cfgmod)
+    actions.settings = cfgmod.settings
+
+    class FakeResp:
+        def __init__(self, code, body):
+            self.status_code, self._body = code, body
+
+        def json(self):
+            return self._body
+
+    def client_for(resp, seen=None):
+        class FakeClient:
+            def __init__(self, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def post(self, url, **kw):
+                if seen is not None:
+                    seen.update({"url": url, **kw})
+                return resp
+        return FakeClient
+
+    seen = {}
+    body = {"ok": True, "student_id": "JN25PG067", "name": "Test Student",
+            "attendance_pct": 81.2, "ce_pct": 64.0, "subjects": 7,
+            "insight_headline": "Solid trimester", "from_cache": True,
+            "path": "reports_out/internal/leak.html",
+            "report_url": "https://reports.tryrehearsal.ai/rv/tok123"}
+    out = run(Svc(None), client_for(FakeResp(200, body), seen))
+    check("success proxies the agent result",
+          out.get("generated") and out.get("report_url", "").endswith("/rv/tok123"))
+    check("internal file path NOT leaked", "path" not in out)
+    check("basic auth + refresh param sent",
+          seen.get("auth") == ("u", "p")
+          and seen.get("params", {}).get("refresh") == "false"
+          and "/generate/noida/2025-27/JN25PG067" in seen.get("url", ""))
+
+    out = run(Svc(None), client_for(FakeResp(404, {})))
+    check("unknown student -> found:false", out.get("found") is False)
+    check("agent 5xx -> clean ToolError",
+          raises(lambda: run(Svc(None), client_for(FakeResp(503, {}))), ToolError))
+
+    # 4. boot validation: half config / non-https rejected
+    def vraises():
+        try:
+            cfgmod.validate_config()
+            return False
+        except RuntimeError:
+            return True
+
+    os.environ.pop("AGENT_ADMIN_PASS", None)
+    importlib.reload(cfgmod)
+    check("half-configured agent backend rejected at boot", vraises())
+    os.environ.update({"AGENT_ADMIN_PASS": "p",
+                       "AGENT_API_BASE": "http://agent.example.com"})
+    importlib.reload(cfgmod)
+    check("non-https AGENT_API_BASE rejected at boot", vraises())
+
+    for k in ("AGENT_API_BASE", "AGENT_ADMIN_USER", "AGENT_ADMIN_PASS"):
+        os.environ.pop(k, None)
+    importlib.reload(cfgmod)
+    actions.settings = cfgmod.settings
+
+
 if __name__ == "__main__":
     phase1_latest_run_scope()
     phase2_key_role_detection()
@@ -411,5 +529,6 @@ if __name__ == "__main__":
     phase4_credential_hygiene()
     phase5_oauth_signin()
     phase6_oauth_compat()
+    phase7_create_report()
     print(f"\n{PASS} passed, {FAIL} failed")
     sys.exit(1 if FAIL else 0)

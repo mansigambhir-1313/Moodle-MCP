@@ -29,5 +29,11 @@ services:
         sync: false
       - key: OAUTH_JWT_SIGNING_KEY
         sync: false
+      - key: AGENT_API_BASE
+        value: https://reports.tryrehearsal.ai
+      - key: AGENT_ADMIN_USER
+        sync: false
+      - key: AGENT_ADMIN_PASS
+        sync: false
       - key: REPORT_PUBLIC_BASE_URL
         value: https://reports.tryrehearsal.ai

@@ -45,6 +45,14 @@ class Settings(BaseSettings):
     # Optional stable key so issued OAuth tokens survive a restart/redeploy.
     oauth_jwt_signing_key: str = Field(default="", alias="OAUTH_JWT_SIGNING_KEY")
 
+    # Report generation (create_report tool): the moodle-agent report service.
+    # When all three are set, create_report can trigger on-demand generation there
+    # (server-to-server HTTP Basic). Unset -> the tool reports itself unavailable.
+    # The DB credential here stays SELECT-only; all writes happen in the agent.
+    agent_api_base: str = Field(default="", alias="AGENT_API_BASE")
+    agent_admin_user: str = Field(default="", alias="AGENT_ADMIN_USER")
+    agent_admin_pass: str = Field(default="", alias="AGENT_ADMIN_PASS")
+
     # Identity / reports
     server_name: str = Field(default="jaipuria-moodle-mcp", alias="MCP_SERVER_NAME")
     server_version: str = Field(default="1.0.0", alias="MCP_SERVER_VERSION")
@@ -78,6 +86,9 @@ class Settings(BaseSettings):
 
     def oauth_enabled(self) -> bool:
         return bool(self.google_oauth_client_id and self.google_oauth_client_secret)
+
+    def report_generation_enabled(self) -> bool:
+        return bool(self.agent_api_base and self.agent_admin_user and self.agent_admin_pass)
 
     def oauth_allowed_domains(self) -> list:
         """Lower-cased email domains allowed to sign in (empty = deny everyone)."""
@@ -214,6 +225,15 @@ def validate_config() -> None:
         if not settings.oauth_jwt_signing_key:
             log.warning("OAUTH_JWT_SIGNING_KEY not set — issued OAuth tokens are "
                         "invalidated on every restart/redeploy (users must re-login)")
+
+    # create_report backend: fail-closed on a half-configured setup, and require https
+    # so the Basic credentials never travel in the clear.
+    agent_bits = (settings.agent_api_base, settings.agent_admin_user, settings.agent_admin_pass)
+    if any(agent_bits) and not all(agent_bits):
+        raise RuntimeError("report generation is half-configured: set ALL of AGENT_API_BASE, "
+                           "AGENT_ADMIN_USER, AGENT_ADMIN_PASS (or none)")
+    if settings.agent_api_base and not settings.agent_api_base.startswith("https://"):
+        raise RuntimeError("AGENT_API_BASE must be an https URL")
 
     if not settings.tokens() and not settings.oauth_enabled():
         log.warning("no auth configured (Google OAuth or MCP_ADMIN_TOKEN / MCP_TOKENS) — "
