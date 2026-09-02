@@ -148,11 +148,70 @@ def phase5_sample_renders():
           "Sample Student" in html and "JN24PG" not in html and "JN24SM" not in html)
 
 
+def phase6_attendance_direction():
+    print("\nPHASE 6 — attendance DIRECTION in the pattern story must match the numbers")
+    # gap case where the student attended LESS than the class (the live bug: a 50% vs
+    # 72.7% student was told "you missed fewer classes than most")
+    d = base([subj("Business Forecasting", "Finance", 16.7, 78.8, 50.0, 72.7),
+              subj("Philosophy", "General management", 74.0, 75.0, 70.0, 75.0)])
+    f = br.facts(d)
+    check("pattern is the widest gap", f["pattern"]["subject"] == "Business Forecasting")
+    check("prompt hint says LESS", "LESS" in br.att_direction(f["pattern"]))
+
+    n = {"headline": "Hi Test. You scored above your class average in 0 of 2 subjects.",
+         "subtitle": "This report compares your marks and attendance with your class.",
+         "pattern_title": "Test's Business Forecasting gap", "attendance_line": "Attendance at or above class in 0 of 2 subjects.",
+         "pattern_text": ("In Business Forecasting you got 16.7% and the class got 78.8%. "
+                          "You missed fewer classes than most, and your attendance was 50.0% against the class's 72.7%. "
+                          "The Assignment shows 16.7% against the class's 78.8%."),
+         "tracks": [{"track": "Finance", "title": "Revise notes weekly",
+                     "learning": "Your Assignment in Business Forecasting shows the material was not revised. Next trimester, read your notes before every class.",
+                     "interview": "Talk about your Assignment. If asked about weak areas, say you now revise weekly."},
+                    {"track": "General management", "title": "Keep writing essays",
+                     "learning": "Your Assignment in Philosophy shows steady written work. Next trimester, keep a short summary habit after each topic.",
+                     "interview": "Mention your Assignment in Philosophy. If asked about weak areas, say you practise summaries."}]}
+    probs = br.validate(n, f)
+    check("'missed fewer classes' rejected when he attended less",
+          any("attended LESS" in p for p in probs), probs)
+    n["pattern_text"] = ("In Business Forecasting you got 16.7% and the class got 78.8%. "
+                         "You attended fewer classes than most, at 50.0% against the class's 72.7%. "
+                         "Fewer classes meant fewer chances to keep up with the material. "
+                         "The Assignment shows 16.7% against the class's 78.8%.")
+    check("correct direction passes", br.validate(n, f) == [], br.validate(n, f))
+
+    # inverse: attended MORE, text claims less
+    d2 = base([subj("Wealth Management", "Finance", 60.0, 70.0, 90.0, 80.0),
+               subj("Philosophy", "General management", 80.0, 75.0, 70.0, 75.0)])
+    f2 = br.facts(d2)
+    n2 = dict(n)
+    n2["headline"] = "Hi Test. You scored above your class average in 1 of 2 subjects."
+    n2["attendance_line"] = "Attendance at or above class in 1 of 2 subjects."
+    n2["pattern_title"] = "Test's Wealth Management split"
+    n2["pattern_text"] = ("In Wealth Management you got 60.0% and the class got 70.0%. "
+                          "You attended less than the class, at 90.0% against the class's 80.0%. "
+                          "The Assignment shows 60.0% against the class's 70.0%.")
+    check("'attended less' rejected when he attended more",
+          any("attended MORE" in p for p in br.validate(n2, f2)), br.validate(n2, f2))
+
+
+def phase7_script_escape():
+    print("\nPHASE 7 — chart data cannot break out of the <script> block")
+    d = json.load(open(os.path.join(HERE, "sample", "student.json")))
+    n = json.load(open(os.path.join(HERE, "sample", "narrative.json")))
+    d["subjects"][0]["subject"] = "Retail</script><script>alert(1)//"
+    html = br.render_html(d, br.facts(d), n, "test")
+    check("raw '</script>' from data never appears in markup",
+          "Retail</script><script>alert(1)" not in html)
+    check("escaped form is used instead", "Retail<\\/script>" in html)
+
+
 if __name__ == "__main__":
     phase1_pattern_kinds()
     phase2_interview_picks()
     phase3_validator()
     phase4_fetch_helpers()
     phase5_sample_renders()
+    phase6_attendance_direction()
+    phase7_script_escape()
     print(f"\n{PASS} passed, {FAIL} failed")
     sys.exit(1 if FAIL else 0)

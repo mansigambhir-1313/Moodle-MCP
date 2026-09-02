@@ -110,6 +110,18 @@ def check_numbers(text, allowed):
     return [m for m in re.findall(r"\d+(?:\.\d+)?", text) if float(m) not in allowed and float(m) not in (1, 2, 3, 5, 10, 15, 20, 30, 45, 60, 90)]
 
 
+def att_direction(pattern):
+    """Deterministic sentence fragment for how the pattern subject's attendance compares."""
+    if pattern.get("att_you") is None or pattern.get("att_class") is None:
+        return "no attendance comparison is available; do not mention attendance direction"
+    gap = pattern["att_you"] - pattern["att_class"]
+    if gap > 0:
+        return "you attended MORE than the class average (missed fewer classes)"
+    if gap < 0:
+        return "you attended LESS than the class average (missed more classes)"
+    return "your attendance equals the class average"
+
+
 # ----------------------------------------------------------------------------- llm
 def openrouter_key():
     if os.environ.get("OPENROUTER_API_KEY"):
@@ -145,7 +157,7 @@ FACTS (Trimester {d['trimester']}, {d['student']['campus']} campus, batch {d['st
 Subjects, best-to-worst vs class (you_pct / class_pct / delta points / attendance you vs class):
 {json.dumps([{k: s.get(k) for k in ('subject','track','you_pct','class_pct','delta','att_you','att_class')} for s in f['subjects']], indent=0)}
 Subjects above class average: {len(f['above'])} of {len(f['subjects'])}. Attendance at or above class in {len(f['att_above'])} of {len(f['att'])} subjects.
-PATTERN SUBJECT (already chosen, reason: {f['pattern_why']!r}): {json.dumps({k: f['pattern'][k] for k in ('subject','you_pct','class_pct','delta','att_you','att_class')})}; key component: {json.dumps(f['pattern_comp'])}. Your pattern_text must tell THIS story ({'why attending did not turn into marks' if f['pattern_kind'] == 'split' else 'what went right here and how to repeat it' if f['pattern_kind'] == 'strength' else 'how big the gap is and where it comes from'}).
+PATTERN SUBJECT (already chosen, reason: {f['pattern_why']!r}): {json.dumps({k: f['pattern'][k] for k in ('subject','you_pct','class_pct','delta','att_you','att_class')})}; key component: {json.dumps(f['pattern_comp'])}. Your pattern_text must tell THIS story ({'why attending did not turn into marks' if f['pattern_kind'] == 'split' else 'what went right here and how to repeat it' if f['pattern_kind'] == 'strength' else 'how big the gap is and where it comes from'}). Attendance direction in this subject: {att_direction(f['pattern'])} — never state the opposite.
 TRACKS (one card each; weakest and strongest component are already chosen, you write the learning; all_components lists every assessed component with its delta vs class so you can see the shape of the subject):
 {json.dumps(f['tracks'], indent=0)}
 
@@ -203,6 +215,20 @@ def validate(out, f):
         problems.append(f"pattern must be about {f['pattern']['subject']!r}")
     for m in re.finditer(r"(\d+\.\d+)(?!\s*(%|points|-point|point))", out.get("pattern_text", "") + " " + out.get("headline", "")):
         problems.append(f"decimal {m.group(1)} must be followed by % or 'points'")
+    # attendance DIRECTION must match the numbers (caught live: a student at 50% vs the
+    # class's 72.7% was told "you missed fewer classes than most")
+    pat = f["pattern"]
+    if pat.get("att_you") is not None and pat.get("att_class") is not None:
+        blob = out.get("pattern_text", "") + " " + out.get("pattern_title", "")
+        gap = pat["att_you"] - pat["att_class"]
+        says_more = re.search(r"attend\w* more|more classes than|missed fewer|fewer classes missed", blob, re.I)
+        says_less = re.search(r"attend\w* (less|fewer)|fewer classes than|missed more", blob, re.I)
+        if gap < 0 and says_more:
+            problems.append(f"pattern_text says the student attended more, but attendance is "
+                            f"{pat['att_you']:g}% vs class {pat['att_class']:g}% — he attended LESS; fix the direction")
+        if gap > 0 and says_less:
+            problems.append(f"pattern_text says the student attended less, but attendance is "
+                            f"{pat['att_you']:g}% vs class {pat['att_class']:g}% — he attended MORE; fix the direction")
     if f"{len(f['att_above'])} of {len(f['att'])}" not in out.get("attendance_line", ""):
         problems.append(f"attendance_line must say '{len(f['att_above'])} of {len(f['att'])} subjects'")
     if "%" in out.get("attendance_line", "") or re.search(r"\d+\.\d+", out.get("attendance_line", "")):
@@ -277,6 +303,12 @@ def qr_png(url):
 
 def esc(s):
     return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def jdump(x):
+    """JSON for embedding inside a <script> block: '</' would end the script element
+    early if a subject/component name ever contained '</script>'."""
+    return json.dumps(x).replace("</", "<\\/")
 
 
 def sign(x):
@@ -405,9 +437,9 @@ h1{{font-size:22px;line-height:1.1;font-weight:600;letter-spacing:-.01em;margin:
 </div>
 <script>{charts_js}</script>
 <script>
-document.getElementById('ch-marks').innerHTML = Charts.divergingBar({json.dumps(marks_items)}, {{width:540, labelW:196, rowH:17, subW:112, max:{marks_max}, negLabel:'below the class', posLabel:'above the class', zeroLabel:'class average', tickFmt:v=>(v>0?'+':'')+v}});
-document.getElementById('ch-att').innerHTML = Charts.bullet({json.dumps(att_items)}, {{max:100, width:540, labelW:196, rowH:18, track:'var(--grid)', valueW:112}});
-document.getElementById('tiles').innerHTML = Charts.statTiles({json.dumps(tiles)});
+document.getElementById('ch-marks').innerHTML = Charts.divergingBar({jdump(marks_items)}, {{width:540, labelW:196, rowH:17, subW:112, max:{marks_max}, negLabel:'below the class', posLabel:'above the class', zeroLabel:'class average', tickFmt:v=>(v>0?'+':'')+v}});
+document.getElementById('ch-att').innerHTML = Charts.bullet({jdump(att_items)}, {{max:100, width:540, labelW:196, rowH:18, track:'var(--grid)', valueW:112}});
+document.getElementById('tiles').innerHTML = Charts.statTiles({jdump(tiles)});
 </script></body></html>"""
 
 
