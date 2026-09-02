@@ -79,7 +79,17 @@ def _top_impl(svc, p: TopParams) -> dict:
 
 def _compare_impl(svc, p: CompareParams) -> dict:
     scope = svc.campus_scope(None)
-    campuses = scope if scope is not None else ["indore", "lucknow", "noida", "jaipur"]
+    if scope is not None:
+        campuses = scope
+    else:
+        # all-campus caller: derive the campus set from the data (a completed run for this
+        # batch) instead of a hardcoded list, so a newly-onboarded campus is never silently
+        # excluded. _rollup still scope-gates each one.
+        from config import settings
+        rows = (svc.client.table("extraction_runs").select("campus")
+                .eq("batch", p.batch).eq("status", "completed").eq("purpose", settings.report_purpose)
+                .not_.is_("finished_at", "null").execute()).data or []
+        campuses = sorted({r["campus"] for r in rows})
     out = []
     for c in campuses:
         roll = _rollup(svc, c, p.batch, p.trimester)
