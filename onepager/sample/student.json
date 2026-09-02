@@ -1,0 +1,251 @@
+{
+ "student": {
+  "id": "JN24TEST01",
+  "name": "Sample Student",
+  "campus": "Noida",
+  "batch": "2024-26"
+ },
+ "trimester": "5",
+ "data_date": "10 August 2026",
+ "benchmark": "same-class average (your section)",
+ "tracks": [
+  "Finance",
+  "Marketing",
+  "GenAI",
+  "General management"
+ ],
+ "store": {
+  "ios": "https://apps.apple.com/in/app/try-rehearsal-ai/id6762619041",
+  "android": "https://play.google.com/store/apps/details?id=ai.rehearsal.app"
+ },
+ "subjects": [
+  {
+   "subject": "Financial Modelling and Analysis",
+   "track": "Finance",
+   "you_pct": 83.5,
+   "class_pct": 84.8,
+   "att_you": 72.3,
+   "att_class": 68.1,
+   "components": [
+    {
+     "component": "Class Participation",
+     "kind": "CE",
+     "you_pct": 69.0,
+     "class_pct": 67.8
+    },
+    {
+     "component": "Group Project",
+     "kind": "CE",
+     "you_pct": 85.0,
+     "class_pct": 82.6
+    },
+    {
+     "component": "Lab Based Individual Assignment",
+     "kind": "CE",
+     "you_pct": 89.5,
+     "class_pct": 93.4
+    },
+    {
+     "component": "Quiz",
+     "kind": "CE",
+     "you_pct": 86.4,
+     "class_pct": 94.7
+    }
+   ]
+  },
+  {
+   "subject": "GenAI for Managers",
+   "track": "GenAI",
+   "you_pct": 72.3,
+   "class_pct": 70.2,
+   "att_you": 73.9,
+   "att_class": 71.8,
+   "components": [
+    {
+     "component": "Assignment",
+     "kind": "CE",
+     "you_pct": 68.0,
+     "class_pct": 64.3
+    },
+    {
+     "component": "Final Project 1",
+     "kind": "CE",
+     "you_pct": 68.0,
+     "class_pct": 68.1
+    },
+    {
+     "component": "Final Project 2",
+     "kind": "CE",
+     "you_pct": 72.0,
+     "class_pct": 68.1
+    },
+    {
+     "component": "Group Project",
+     "kind": "CE",
+     "you_pct": 69.6,
+     "class_pct": 66.2
+    },
+    {
+     "component": "Quiz",
+     "kind": "CE",
+     "you_pct": 90.0,
+     "class_pct": 86.3
+    }
+   ]
+  },
+  {
+   "subject": "Introduction to Philosophy",
+   "track": "General management",
+   "you_pct": 92.0,
+   "class_pct": 78.1,
+   "att_you": 95.4,
+   "att_class": 91.5,
+   "components": [
+    {
+     "component": "AI Simulation",
+     "kind": "CE",
+     "you_pct": 82.0,
+     "class_pct": 75.8
+    },
+    {
+     "component": "Classroom discussions",
+     "kind": "CE",
+     "you_pct": 93.0,
+     "class_pct": 64.6
+    },
+    {
+     "component": "Essay-based assignments",
+     "kind": "CE",
+     "you_pct": 82.0,
+     "class_pct": 85.3
+    },
+    {
+     "component": "Group Project",
+     "kind": "CE",
+     "you_pct": 92.0,
+     "class_pct": 79.3
+    },
+    {
+     "component": "MCQ Tests",
+     "kind": "CE",
+     "you_pct": 99.0,
+     "class_pct": 92.8
+    }
+   ]
+  },
+  {
+   "subject": "Product and Category Management",
+   "track": "Marketing",
+   "you_pct": 84.5,
+   "class_pct": 79.6,
+   "att_you": 78.3,
+   "att_class": 69.0,
+   "components": [
+    {
+     "component": "Article Presentation",
+     "kind": "CE",
+     "you_pct": 87.0,
+     "class_pct": 65.0
+    },
+    {
+     "component": "Change the Game",
+     "kind": "CE",
+     "you_pct": 77.0,
+     "class_pct": 83.6
+    },
+    {
+     "component": "Quiz 1",
+     "kind": "CE",
+     "you_pct": 82.5,
+     "class_pct": 82.2
+    },
+    {
+     "component": "Quiz 2",
+     "kind": "CE",
+     "you_pct": 79.5,
+     "class_pct": 80.2
+    }
+   ]
+  },
+  {
+   "subject": "Retail Marketing",
+   "track": "Marketing",
+   "you_pct": 57.7,
+   "class_pct": 72.6,
+   "att_you": 73.0,
+   "att_class": 77.7,
+   "components": [
+    {
+     "component": "Class Participation",
+     "kind": "CE",
+     "you_pct": 53.0,
+     "class_pct": 74.9
+    },
+    {
+     "component": "Discussion Forum",
+     "kind": "CE",
+     "you_pct": 48.7,
+     "class_pct": 63.1
+    },
+    {
+     "component": "Mystery Audit",
+     "kind": "CE",
+     "you_pct": 51.3,
+     "class_pct": 61.7
+    },
+    {
+     "component": "Store Prototype",
+     "kind": "CE",
+     "you_pct": 67.0,
+     "class_pct": 70.7
+    }
+   ]
+  },
+  {
+   "subject": "Wealth Management",
+   "track": "Finance",
+   "you_pct": 76.2,
+   "class_pct": 77.3,
+   "att_you": 73.0,
+   "att_class": 70.2,
+   "components": [
+    {
+     "component": "Case Analysis",
+     "kind": "CE",
+     "you_pct": 81.0,
+     "class_pct": 75.1
+    },
+    {
+     "component": "Financial Plan",
+     "kind": "CE",
+     "you_pct": 65.5,
+     "class_pct": 62.1
+    },
+    {
+     "component": "iJaipuria Certificate",
+     "kind": "CE",
+     "you_pct": 99.0,
+     "class_pct": 98.4
+    },
+    {
+     "component": "Quiz 1",
+     "kind": "CE",
+     "you_pct": 89.0,
+     "class_pct": 89.2
+    },
+    {
+     "component": "Quiz 2",
+     "kind": "CE",
+     "you_pct": 82.0,
+     "class_pct": 71.5
+    },
+    {
+     "component": "Situation Based Group Exercise",
+     "kind": "CE",
+     "you_pct": 78.0,
+     "class_pct": 81.2
+    }
+   ]
+  }
+ ]
+}

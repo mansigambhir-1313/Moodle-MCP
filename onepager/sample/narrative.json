@@ -1,0 +1,35 @@
+{
+ "headline": "Hi Sample. You scored above your class average in 3 of 6 subjects.",
+ "subtitle": "This report compares your Trimester 5 performance with your class.",
+ "pattern_title": "Sample's Philosophy class discussions",
+ "pattern_text": "In Introduction to Philosophy, your marks were 92.0%, class marks were 78.1%. Your attendance was 95.4%, class attendance was 91.5%. You attended more classes and your marks were much higher. Your marks in Classroom discussions were 93.0%, while the class marks were 64.6%.",
+ "attendance_line": "You attended at or above class average in 5 of 6 subjects.",
+ "tracks": [
+  {
+   "track": "Finance",
+   "title": "Review quiz answers",
+   "learning": "Your marks in the Financial Modelling and Analysis Quiz were lower than the class. This shows you need to check your understanding. Before each Finance class next trimester, read your notes for ten minutes.",
+   "interview": "Talk about your Case Analysis in Wealth Management. If asked about quizzes, say you will review answers more carefully."
+  },
+  {
+   "track": "Marketing",
+   "title": "Speak up in class",
+   "learning": "Your marks in Retail Marketing Class Participation were much lower than the class. This shows you did not share your thoughts. Next trimester, ask one question in every Marketing class.",
+   "interview": "Mention your Article Presentation in Product and Category Management. If asked about class participation, say you will contribute more in class."
+  },
+  {
+   "track": "GenAI",
+   "title": "Check project details",
+   "learning": "Your marks in GenAI for Managers Final Project 1 were just below the class. This shows you missed some project requirements. Next trimester, make a checklist of all project requirements before starting.",
+   "interview": "Discuss your Final Project 2 in GenAI for Managers. If asked about project details, say you will check requirements more closely."
+  },
+  {
+   "track": "General management",
+   "title": "Plan your essays",
+   "learning": "Your marks in Introduction to Philosophy Essay-based assignments were a little below the class. This shows your essay structure needs work. Next trimester, make an outline before writing any essay.",
+   "interview": "Highlight your Classroom discussions in Introduction to Philosophy. If asked about essays, say you will plan your answers better."
+  }
+ ],
+ "_model": "google/gemini-2.5-flash",
+ "_cost_usd": 0.00529
+}
