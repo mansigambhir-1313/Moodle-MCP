@@ -112,7 +112,11 @@ def principal_from_claims(claims: dict):
     if verified is False:
         return None
     domain = email.rsplit("@", 1)[1]
-    if domain not in settings.oauth_allowed_domains():
+    # Accept an allowed domain AND its subdomains (e.g. ailabs.jaipuria.ac.in matches
+    # jaipuria.ac.in). The leading dot prevents look-alikes like evil-jaipuria.ac.in —
+    # only DNS Jaipuria controls can create a real *.jaipuria.ac.in.
+    allowed = settings.oauth_allowed_domains()
+    if not any(domain == a or domain.endswith("." + a) for a in allowed):
         log.warning("oauth sign-in rejected: domain %r not allowed", domain)
         return None
     override = settings.faculty().get(email)
