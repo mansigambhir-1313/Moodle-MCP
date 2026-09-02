@@ -23,6 +23,16 @@ MSG_RATE = "Rate limit exceeded — please slow down and retry shortly."
 MSG_ERROR = "This query could not be completed right now. Please retry."
 
 
+def quiet_noisy_loggers() -> None:
+    """Cap third-party HTTP client loggers at WARNING. At INFO, httpx logs every
+    request URL — including Google's tokeninfo endpoint, whose query string carries
+    the caller's LIVE access token — straight into the platform logs. Anyone with
+    log access could replay that token for its remaining lifetime. Our own
+    "moodle-mcp*" loggers are unaffected and stay at INFO."""
+    for name in ("httpx", "httpcore"):
+        logging.getLogger(name).setLevel(logging.WARNING)
+
+
 # --- token resolution: cached map + constant-time compare --------------------
 _token_cache: dict = {"sig": None, "map": {}}
 

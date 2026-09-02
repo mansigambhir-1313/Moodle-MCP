@@ -522,6 +522,23 @@ def phase7_create_report():
     actions.settings = cfgmod.settings
 
 
+def phase8_quiet_noisy_loggers():
+    print("\nPHASE 8 — secret-bearing third-party loggers are capped at WARNING")
+    import logging
+
+    from security import quiet_noisy_loggers
+
+    logging.getLogger().setLevel(logging.INFO)          # what server.py's basicConfig sets up
+    logging.getLogger("httpx").setLevel(logging.INFO)   # simulate httpx's default chatter
+    quiet_noisy_loggers()
+    check("httpx capped at WARNING (tokeninfo URLs carry live access tokens)",
+          not logging.getLogger("httpx").isEnabledFor(logging.INFO))
+    check("httpcore capped at WARNING",
+          not logging.getLogger("httpcore").isEnabledFor(logging.INFO))
+    check("own moodle-mcp loggers still emit INFO",
+          logging.getLogger("moodle-mcp.security").isEnabledFor(logging.INFO))
+
+
 if __name__ == "__main__":
     phase1_latest_run_scope()
     phase2_key_role_detection()
@@ -530,5 +547,6 @@ if __name__ == "__main__":
     phase5_oauth_signin()
     phase6_oauth_compat()
     phase7_create_report()
+    phase8_quiet_noisy_loggers()
     print(f"\n{PASS} passed, {FAIL} failed")
     sys.exit(1 if FAIL else 0)
