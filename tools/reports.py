@@ -1,4 +1,4 @@
-"""Report retrieval — find students, open one full report, check pipeline status. Read-only."""
+"""Report retrieval — find students, open one full report, check data availability. Read-only."""
 from pydantic import BaseModel, Field
 
 from annotations import READONLY_ANNOTATIONS
@@ -24,10 +24,9 @@ class ReportParams(BaseModel):
     trimester: str | None = Field(default=None, max_length=8)
 
 
-class StatusParams(BaseModel):
-    campus: str = Field(description="campus", max_length=64)
-    batch: str = Field(description="batch e.g. '2024-26'", max_length=64)
-    trimester: str = Field(description="trimester number", max_length=8)
+class AvailabilityParams(BaseModel):
+    campus: str | None = Field(default=None, description="one campus (within your grant); omit for all", max_length=64)
+    batch: str | None = Field(default=None, description="batch e.g. '2024-26'; omit for all", max_length=64)
 
 
 def _search_impl(svc, p: SearchParams) -> dict:
@@ -89,29 +88,47 @@ def _report_impl(svc, p: ReportParams) -> dict:
     }
 
 
-def _status_impl(svc, p: StatusParams) -> dict:
-    if svc.campus_scope(p.campus) == []:
+def _availability_impl(svc, p: AvailabilityParams) -> dict:
+    """What report data exists per (campus, batch) in the caller's grant: latest
+    snapshot time, roster size, and the trimesters covered by that snapshot."""
+    if p.campus and svc.campus_scope(p.campus) == []:
         return not_found("scope")
-    run_id = svc.latest_run(p.campus, p.batch)
-    if not run_id:
-        return {"available": False, "note": f"no completed final run for {p.campus}/{p.batch}"}
-    jobs = (svc.client.table("student_report_jobs").select("status,student_id")
-            .eq("run_id", run_id).limit(100000).execute()).data or []
-    from collections import Counter
-    c = Counter(j["status"] for j in jobs)
-    held = [j["student_id"] for j in jobs if j["status"] == "manual_review"][:50]
-    total = len(jobs) or 1
-    return {"campus": p.campus, "batch": p.batch, "trimester": str(p.trimester),
-            "total": len(jobs), "ready": c.get("ready_to_send", 0),
-            "held_for_review": c.get("manual_review", 0), "failed": c.get("failed", 0),
-            "ready_pct": round(100 * c.get("ready_to_send", 0) / total, 1),
-            "held_students_sample": held}
+    q = (svc.client.table("extraction_runs")
+         .select("campus,batch,run_id,finished_at")
+         .eq("status", "completed").eq("purpose", settings.report_purpose)
+         .not_.is_("finished_at", "null")
+         .order("finished_at", desc=True).limit(200))
+    q = svc.apply_campus(q, requested=p.campus)
+    if p.batch:
+        q = q.eq("batch", p.batch)
+    runs = q.execute().data or []
+    latest, order = {}, []
+    for r in runs:  # newest-first: first hit per scope is the live snapshot
+        k = (r["campus"], r["batch"])
+        if k not in latest:
+            latest[k] = r
+            order.append(k)
+    scopes = []
+    for k in order[:12]:
+        r = latest[k]
+        n = (svc.client.table("students").select("student_id", count="exact")
+             .eq("campus", r["campus"]).eq("batch", r["batch"])
+             .limit(1).execute()).count or 0
+        from tools.common import courses_for
+        tris = sorted({c["trimester"] for c in courses_for(svc, r["run_id"]).values()
+                       if c["trimester"]}, key=str)
+        scopes.append({"campus": r["campus"], "batch": r["batch"],
+                       "latest_snapshot": r["finished_at"], "students": n,
+                       "trimesters_with_data": tris})
+    return {"scopes": scopes, "found": bool(scopes),
+            "note": ("Reports are generated on demand with create_report and read "
+                     "with get_student_report — no pre-built queue to wait on.")}
 
 
 def register(mcp, get_service):
     # NOTE: this module is the SECONDARY report layer. Raw student data lives in tools/students.py
     # (list_students / get_student / student_marks / student_attendance) — prefer those. Here we
-    # only expose the generated narrative report and the pipeline status.
+    # only expose the generated narrative report and the data-availability overview.
 
     @mcp.tool(title="Get Student Report", annotations=READONLY_ANNOTATIONS)
     async def get_student_report(params: ReportParams) -> dict:
@@ -125,14 +142,15 @@ def register(mcp, get_service):
         """
         return _report_impl(await get_service(), params)
 
-    @mcp.tool(title="Report Pipeline Status", annotations=READONLY_ANNOTATIONS)
-    async def report_pipeline_status(params: StatusParams) -> dict:
+    @mcp.tool(title="Report Data Availability", annotations=READONLY_ANNOTATIONS)
+    async def report_data_availability(params: AvailabilityParams) -> dict:
         """
-        WHAT: How many reports are ready / held for review / failed for a scope, with a sample of
-        held students.
-        USE WHEN they say: 'are the reports ready', 'how many are pending', 'what's held for
-        review in indore', 'pipeline status'.
-        DO NOT USE WHEN they want accuracy (use accuracy_overview) or a specific report.
-        RETURNS: ready / held_for_review / failed counts + ready_pct. available:false if no run.
+        WHAT: What report data exists in your grant — per campus/batch: when the latest Moodle
+        snapshot finished, how many students are on the roster, and which trimesters have data.
+        USE WHEN they say: 'is the data in', 'which trimesters do we have', 'how fresh is the
+        data', 'can I generate reports for noida yet', 'what batches are covered'.
+        DO NOT USE WHEN they want one student's report (use get_student_report) or want to
+        generate a shareable link (use create_report).
+        RETURNS: scopes[{campus, batch, latest_snapshot, students, trimesters_with_data}].
         """
-        return _status_impl(await get_service(), params)
+        return _availability_impl(await get_service(), params)
