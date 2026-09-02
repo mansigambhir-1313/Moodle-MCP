@@ -81,8 +81,30 @@ if settings.oauth_enabled():
 # (full detail logged server-side only), so a Supabase/PostgREST error never leaks the project URL,
 # schema, or the service-role key. Explicitly-raised ToolError messages (rate limit / access
 # denied) are still shown — that is the safe, intentional error channel.
+# Brand icon shown by MCP hosts on install (claude.ai, Codex, any client that reads
+# the MCP-standard serverInfo.icons). Embedded as a data URI so it always renders
+# with zero external fetch — critical because a free instance may be spun down when
+# the host asks; a hosted /brand/logo.png is offered too, for clients that prefer a URL.
+import base64 as _b64
+from pathlib import Path as _Path
+
+import mcp.types as _mcptypes
+
+_LOGO_PATH = _Path(__file__).parent / "assets" / "logo.png"
+_ICONS = None
+try:
+    _b = _LOGO_PATH.read_bytes()
+    _data_uri = "data:image/png;base64," + _b64.b64encode(_b).decode("ascii")
+    _hosted = f"{settings.server_base_url.rstrip('/')}/brand/logo.png" if settings.server_base_url else None
+    _ICONS = [_mcptypes.Icon(src=_data_uri, mimeType="image/png", sizes=["128x128"])]
+    if _hosted:
+        _ICONS.append(_mcptypes.Icon(src=_hosted, mimeType="image/png", sizes=["128x128"]))
+except Exception:  # noqa: BLE001 — a missing logo must never stop the server booting
+    log.warning("brand logo not loaded from %s", _LOGO_PATH, exc_info=True)
+
 mcp = FastMCP(name=settings.server_name, version=settings.server_version,
-              instructions=INSTRUCTIONS, mask_error_details=True, auth=auth_provider)
+              instructions=INSTRUCTIONS, mask_error_details=True, auth=auth_provider,
+              icons=_ICONS, website_url="https://tryrehearsal.ai")
 mcp.add_middleware(build_middleware(settings.rate_limit, settings.rate_window_seconds))
 
 
@@ -134,7 +156,20 @@ async def health_check(request: Request) -> JSONResponse:
     return JSONResponse({"status": "ok"})
 
 
+async def brand_logo(request: Request):
+    # Public brand icon for hosts that fetch by URL (the data-URI icon in
+    # serverInfo is the primary; this is the belt-and-braces copy). No auth, no PII.
+    from starlette.responses import Response
+    try:
+        data = _LOGO_PATH.read_bytes()
+    except OSError:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return Response(content=data, media_type="image/png",
+                    headers={"Cache-Control": "public, max-age=604800"})
+
+
 app.routes.insert(0, Route("/health", health_check, methods=["GET"]))
+app.routes.insert(0, Route("/brand/logo.png", brand_logo, methods=["GET"]))
 
 # URL tolerance: hosts (and users typing connector URLs) reach the MCP endpoint whether
 # they enter .../mcp or just the bare domain — "/" is rewritten to "/mcp", and the root
@@ -146,7 +181,8 @@ app = PathAliases(app)
 # unauthenticated tool enumeration) before JSON-RPC; /health stays open. OAuth mode: FastMCP's
 # auth layer owns token validation and the 401/WWW-Authenticate discovery handshake, and its
 # OAuth endpoints must be reachable pre-auth — so only the body cap + per-IP limit apply here.
-app = TransportGuard(app, max_body=settings.max_body_bytes,
+app = TransportGuard(app, open_paths=("/health", "/brand/logo.png"),
+                     max_body=settings.max_body_bytes,
                      ip_rate_limit=settings.ip_rate_limit,
                      ip_window=settings.rate_window_seconds,
                      check_bearer=not settings.oauth_enabled())
