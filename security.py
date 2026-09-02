@@ -112,28 +112,42 @@ def principal_from_claims(claims: dict):
     if verified is False:
         return None
     domain = email.rsplit("@", 1)[1]
-    # Accept an allowed domain AND its subdomains (e.g. ailabs.jaipuria.ac.in matches
-    # jaipuria.ac.in). The leading dot prevents look-alikes like evil-jaipuria.ac.in —
-    # only DNS Jaipuria controls can create a real *.jaipuria.ac.in.
-    allowed = settings.oauth_allowed_domains()
-    if not any(domain == a or domain.endswith("." + a) for a in allowed):
-        log.warning("oauth sign-in rejected: domain %r not allowed", domain)
-        return None
+
+    # 1. Env override (admin break-glass) — an EXPLICITLY listed email is allowed
+    #    regardless of domain (so a named external guest, e.g. a VC's gmail, can be
+    #    granted without opening the domain gate to the whole world).
     override = settings.faculty().get(email)
     if override is not None:
         return {"name": override.get("name") or claims.get("name") or email,
                 "email": email, "campuses": override.get("campuses")}
+
+    # 2. Student-roster HARD DENY — always, before any grant.
     import faculty as registry
     if registry.is_student(email):
-        return None  # roster accounts never get access (logged in the registry)
+        return None
+
+    # 3. mcp_faculty DB row — also an EXPLICIT allowlist, so a listed external email
+    #    (any domain, e.g. a specific VC gmail) is granted without the domain gate.
+    #    Writes to this table are service-role only, so it is admin-controlled.
     grant = registry.faculty_grant(email)
     if grant is not None:
         return {"name": grant.get("name") or claims.get("name") or email,
                 "email": email, "campuses": grant["campuses"]}
+
+    # 4. Domain gate — only the DEFAULT-grant path is domain-restricted. Accept an
+    #    allowed domain AND its subdomains (ailabs.jaipuria.ac.in matches jaipuria.ac.in);
+    #    the leading dot blocks look-alikes like evil-jaipuria.ac.in. A non-allowlisted
+    #    address outside the allowed domains (e.g. a random gmail) is denied here.
+    allowed = settings.oauth_allowed_domains()
+    if not any(domain == a or domain.endswith("." + a) for a in allowed):
+        log.warning("oauth sign-in rejected: %s not allowlisted and domain %r not allowed",
+                    email, domain)
+        return None
+
+    # 5. Default grant for an allowed-domain account with no explicit row.
     default = settings.oauth_default_campuses()
     if default == "deny":
-        log.warning("oauth sign-in rejected: %s has no mcp_faculty grant "
-                    "(OAUTH_DEFAULT_CAMPUSES=none)", email)
+        log.warning("oauth sign-in rejected: %s has no grant (OAUTH_DEFAULT_CAMPUSES=none)", email)
         return None
     return {"name": claims.get("name") or email, "email": email, "campuses": default}
 
