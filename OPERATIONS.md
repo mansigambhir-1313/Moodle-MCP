@@ -91,3 +91,59 @@ provider, or accept re-login as the cost of a deploy.
   if they hold domain accounts — can read every campus's marks. The server now
   logs a boot warning for this combination; the faculty-only configuration is
   `OAUTH_DEFAULT_CAMPUSES=none` plus explicit `MCP_FACULTY` entries.
+
+## Faculty access at scale — the mcp_faculty registry (2026-09-02)
+
+Access for ~500 faculty is governed by the Supabase table `mcp_faculty`
+(email PK, `campuses` = `"all"` or `["noida","jaipur",...]`, `active`,
+`name`, `note`). The server consults it on every sign-in with the grant order:
+
+1. `MCP_FACULTY` env — break-glass admin override (survives DB outages and a
+   poisoned roster; keep ONLY the administrator here);
+2. **student hard deny** — 3,144 students share the `jaipuria.ac.in` Google
+   domain, so any email found in the `students` roster is denied even if it has
+   an mcp_faculty row;
+3. `mcp_faculty` row (active) — the normal path; malformed/inactive rows deny;
+4. `OAUTH_DEFAULT_CAMPUSES` — `none` in production, so everything else denies.
+
+Lookups are cached ~60s (roster hits 10 min), so changes apply within a minute
+without a redeploy; a transient DB error serves the last-known-good grant for
+signed-in users and denies strangers (fail closed).
+
+**Add one faculty member** (service role, SQL editor):
+```sql
+insert into mcp_faculty (email, name, campuses, note)
+values ('prof@jaipuria.ac.in', 'Prof Name', '["noida"]'::jsonb, 'added by <you>')
+on conflict (email) do update
+  set name=excluded.name, campuses=excluded.campuses,
+      active=true, updated_at=now();
+```
+
+**Bulk-load from CSV** — stage and merge:
+```sql
+create temp table fac_in (email text, name text, campuses text);
+-- \copy fac_in from 'faculty.csv' csv header   (psql) or paste INSERTs
+insert into mcp_faculty (email, name, campuses, note)
+select lower(trim(email)), trim(name),
+       case when lower(trim(campuses)) in ('', 'all') then '"all"'::jsonb
+            else to_jsonb(string_to_array(lower(replace(campuses,' ','')), '+')) end,
+       'bulk load ' || current_date
+from fac_in
+on conflict (email) do update
+  set name=excluded.name, campuses=excluded.campuses,
+      active=true, updated_at=now();
+```
+(CSV `campuses` column: `all`, or `noida+jaipur` style.)
+
+**Revoke**: `update mcp_faculty set active=false, updated_at=now() where email='...';`
+— takes effect within the 60s cache TTL. Never delete rows for audit history.
+
+**Invariants**: the MCP's own DB role (`reporting_readonly`) can SELECT this
+table and cannot write it (verified: INSERT → permission denied). Students are
+denied at gate 2 regardless of table contents. `create_report` inputs are
+validated to `[A-Za-z0-9_-]{1,64}` before touching the admin-authenticated
+agent URL, so no faculty token can steer that request to another route.
+
+**NAT headroom**: ~500 faculty on campus share egress IPs, so the pre-auth
+per-IP limit is raised via `MCP_IP_RATE_LIMIT=1200` (per minute) on Render;
+per-principal limits (90/min) still bound each individual account.

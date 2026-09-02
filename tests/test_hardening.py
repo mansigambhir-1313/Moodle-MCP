@@ -241,6 +241,16 @@ def phase5_oauth_signin():
     importlib.reload(security)
     from security import principal_from_claims
 
+    # The DB faculty registry now sits between the env override and the default
+    # grant; stub it as "reachable, empty, nobody is a student" so these checks
+    # keep testing the identity gates + default-grant logic in isolation
+    # (tests/test_faculty_registry.py covers the registry itself).
+    import faculty as _reg
+    _reg._fetch_faculty_row = lambda email: None
+    _reg._fetch_student_hit = lambda email: False
+    _reg._grants = _reg.TTLCache(maxsize=8, ttl=0.0)
+    _reg._students = _reg.TTLCache(maxsize=8, ttl=0.0)
+
     p = principal_from_claims({"email": "Prof@Jaipuria.ac.in", "name": "Prof"})
     check("jaipuria.ac.in email accepted (case-insensitive)",
           p is not None and p["email"] == "prof@jaipuria.ac.in")

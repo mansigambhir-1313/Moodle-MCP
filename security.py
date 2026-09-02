@@ -95,8 +95,13 @@ def bearer_of(headers: dict) -> str:
 def principal_from_claims(claims: dict):
     """Verified Google claims -> campus-scoped principal, or None (fail-closed).
     Gate 1: email present and verified. Gate 2: domain in OAUTH_ALLOWED_DOMAINS
-    (jaipuria.ac.in). Grant: MCP_FACULTY override per email, else the configured
-    default ('all' unless narrowed)."""
+    (jaipuria.ac.in). Grant order (first match wins):
+      1. MCP_FACULTY env override — deploy-time break-glass, admin-controlled;
+      2. student-roster HARD DENY — 3,144 students share the Google domain, and
+         data (the roster) must never be able to lock out the env-listed admin,
+         which is why the env override is checked first;
+      3. mcp_faculty DB registry row (scales to ~500 faculty, no redeploys);
+      4. OAUTH_DEFAULT_CAMPUSES ('none' in production -> deny)."""
     from config import settings
     email = str(claims.get("email") or "").strip().lower()
     if not email or "@" not in email:
@@ -114,9 +119,16 @@ def principal_from_claims(claims: dict):
     if override is not None:
         return {"name": override.get("name") or claims.get("name") or email,
                 "email": email, "campuses": override.get("campuses")}
+    import faculty as registry
+    if registry.is_student(email):
+        return None  # roster accounts never get access (logged in the registry)
+    grant = registry.faculty_grant(email)
+    if grant is not None:
+        return {"name": grant.get("name") or claims.get("name") or email,
+                "email": email, "campuses": grant["campuses"]}
     default = settings.oauth_default_campuses()
     if default == "deny":
-        log.warning("oauth sign-in rejected: %s not in MCP_FACULTY "
+        log.warning("oauth sign-in rejected: %s has no mcp_faculty grant "
                     "(OAUTH_DEFAULT_CAMPUSES=none)", email)
         return None
     return {"name": claims.get("name") or email, "email": email, "campuses": default}

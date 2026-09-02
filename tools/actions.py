@@ -6,10 +6,12 @@ insight + its cache write) happens entirely in the agent service, reached server
 over https with HTTP Basic credentials from env. The tool never emails anything.
 """
 import logging
+import re
+from urllib.parse import quote
 
 import httpx
 from fastmcp.exceptions import ToolError
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from annotations import GENERATE_ANNOTATIONS
 from config import settings
@@ -27,6 +29,14 @@ _PASS_FIELDS = ("student_id", "name", "attendance_pct", "ce_pct", "subjects",
                 "insight_headline", "from_cache", "report_url")
 
 
+# These three values are built into a URL PATH on the agent API, which this tool
+# calls with ADMIN credentials — so they must never be able to change the route.
+# One conservative charset (no dots, slashes, '?', '#', '%', spaces) kills path
+# traversal, query smuggling, and fragment tricks outright; real campus/batch/
+# enrolment ids are all plain [A-Za-z0-9_-].
+_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+
+
 class CreateReportParams(BaseModel):
     campus: str = Field(description="campus (within your grant)", max_length=64)
     batch: str = Field(description="batch e.g. '2025-27'", max_length=64)
@@ -34,14 +44,24 @@ class CreateReportParams(BaseModel):
     refresh: bool = Field(default=False,
                           description="regenerate the insight instead of using the cache")
 
+    @field_validator("campus", "batch", "student_id")
+    @classmethod
+    def _plain_segment(cls, v: str, info):
+        v = (v or "").strip()
+        if not _SEGMENT_RE.fullmatch(v):
+            raise ValueError("only letters, digits, '-' and '_' are allowed")
+        return v
+
 
 async def _create_impl(svc, p: CreateReportParams) -> dict:
     if svc.campus_scope(p.campus) == []:
         raise PermissionError(MSG_DENIED)  # campus outside the caller's grant
     if not settings.report_generation_enabled():
         raise ToolError(MSG_UNCONFIGURED)
+    # belt and braces on top of the validator: URL-encode each path segment
     url = (f"{settings.agent_api_base.rstrip('/')}/generate/"
-           f"{p.campus}/{p.batch}/{p.student_id}")
+           f"{quote(p.campus, safe='')}/{quote(p.batch, safe='')}/"
+           f"{quote(p.student_id, safe='')}")
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
             r = await client.post(url, params={"refresh": str(p.refresh).lower()},

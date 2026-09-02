@@ -26,6 +26,10 @@ services:
         sync: false
       - key: OAUTH_ALLOWED_DOMAINS
         value: jaipuria.ac.in
+      # ~500 faculty share campus egress IPs (NAT), so the PRE-AUTH per-IP flood
+      # limit needs headroom; per-principal limits (90/min) still bound each user.
+      - key: MCP_IP_RATE_LIMIT
+        value: "1200"
       # Fail-closed default: only emails listed in MCP_FACULTY get access. The code
       # default is "all" for backwards compatibility, but "all" means every verified
       # domain account (students included, if they hold accounts) reads every campus.
