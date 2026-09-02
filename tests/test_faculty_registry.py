@@ -155,6 +155,10 @@ def rejected(**kw):
 
 check("valid params accepted", not rejected())
 check("underscore/hyphen ids accepted", not rejected(student_id="JN25_PG-067"))
+# params are OPTIONAL now: empty/None means "omitted" (pick for me), never an injection
+check("empty campus accepted (means: any campus)", not rejected(campus=""))
+check("empty student_id accepted (means: pick a student)", not rejected(student_id=""))
+check("all omitted accepted", not rejected(campus="", batch="", student_id=""))
 for label, payload in [
     ("path traversal ..", {"student_id": "../../runs"}),
     ("slash", {"student_id": "a/b"}),
@@ -163,12 +167,11 @@ for label, payload in [
     ("fragment", {"student_id": "x#y"}),
     ("space", {"student_id": "a b"}),
     ("dot segment", {"batch": ".."}),
-    ("empty campus", {"campus": ""}),
     ("leading dash", {"campus": "-noida"}),
     ("unicode", {"student_id": "JN25PG067‮"}),
     ("percent", {"campus": "no%2fida"}),
 ]:
-    check(f"{label} rejected", rejected(**payload))
+    check(f"non-empty payload still rejected: {label}", rejected(**payload))
 
 print(f"\n{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)

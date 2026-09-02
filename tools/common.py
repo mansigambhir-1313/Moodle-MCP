@@ -78,6 +78,53 @@ def roster_member(svc, student_id, campus, batch):
     return rows[0] if rows else None
 
 
+def graded_scopes(svc, campus=None, batch=None):
+    """(campus, batch, run_id) for every batch with a completed final run, within the
+    caller's grant, newest run first. Optionally narrowed to one campus and/or batch.
+    This is the set a report can actually be built from (roster-only batches excluded)."""
+    from config import settings
+    q = (svc.client.table("extraction_runs")
+         .select("campus,batch,run_id,finished_at")
+         .eq("status", "completed").eq("purpose", settings.report_purpose)
+         .not_.is_("finished_at", "null")
+         .order("finished_at", desc=True).limit(200))
+    q = svc.apply_campus(q, requested=campus)
+    if batch:
+        q = q.eq("batch", batch)
+    rows = q.execute().data or []
+    seen, out = set(), []
+    for r in rows:  # newest-first: first per (campus,batch) is the live snapshot
+        k = (r["campus"], r["batch"])
+        if k not in seen:
+            seen.add(k)
+            out.append((r["campus"], r["batch"], r["run_id"]))
+    return out
+
+
+def random_gradeable_students(svc, run_id, n=4):
+    """Up to n random student_ids that have GRADED marks in this run (graded=true) — the
+    ones most likely to yield a report (mere roster/marks presence isn't enough; an
+    in-progress trimester can be unscored). Shuffled so repeat calls vary."""
+    import random
+    rows = (svc.client.table(MARKS).select("student_id")
+            .eq("run_id", run_id).eq("graded", True).limit(8000).execute()).data or []
+    ids = list({r["student_id"] for r in rows if r.get("student_id")})
+    random.shuffle(ids)
+    return ids[:max(1, n)]
+
+
+def cached_report_students(svc, run_id, limit=5):
+    """student_ids that already have a cached one-page narrative for this run — generating
+    for them is an instant cache hit, so they're the reliable fallback when a randomly
+    sampled student's latest trimester turns out to be unscored."""
+    try:
+        rows = (svc.client.table("onepager_narratives").select("student_id")
+                .eq("run_id", run_id).limit(limit).execute()).data or []
+    except Exception:  # noqa: BLE001 — cache table optional; never block selection
+        return []
+    return list({r["student_id"] for r in rows if r.get("student_id")})
+
+
 # --- paged fetch past the 1000-row PostgREST cap ------------------------------
 def paged(query_factory, page: int = 1000, cap: int = 100000):
     out, offset = [], 0

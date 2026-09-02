@@ -530,6 +530,46 @@ def phase7_create_report():
           out.get("found") is False and "not enrolled" in out.get("note", "").lower())
     _common.roster_member = _orig_rm
 
+    # NEW: optional params — omit student_id (or campus/batch) and a real graded target is chosen
+    _orig_gs = _common.graded_scopes
+    _orig_rgs = _common.random_gradeable_students
+    _orig_crs = _common.cached_report_students
+    _common.graded_scopes = lambda svc, campus=None, batch=None: [("noida", "2025-27", "RID")]
+    _common.cached_report_students = lambda svc, rid, limit=5: []
+    _common.random_gradeable_students = lambda svc, rid, n=4: ["JN25PG099"]
+    body2 = {"ok": True, "student_id": "JN25PG099", "name": "Picked One",
+             "report_url": "https://reports.tryrehearsal.ai/s/abc"}
+    out = run(Svc(None), client_for(FakeResp(200, body2)), student_id=None)
+    check("omit student_id -> auto-picks a graded student and generates",
+          out.get("generated") and out.get("auto_selected") is True
+          and out.get("student_id") == "JN25PG099")
+    # first candidate 404s (unscored trimester) -> retries and lands on the next
+    seq = [FakeResp(404, {"detail": "no scored subjects for X in trimester 4"}),
+           FakeResp(200, body2)]
+
+    def client_seq():
+        class FakeClient:
+            def __init__(self, **kw): pass
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return False
+            async def post(self, url, **kw): return seq.pop(0)
+        return FakeClient
+    _common.random_gradeable_students = lambda svc, rid, n=4: ["BAD01", "JN25PG099"]
+    out = run(Svc(None), client_seq(), student_id=None)
+    check("auto-select retries past a 404 and returns the first that builds",
+          out.get("generated") and out.get("student_id") == "JN25PG099")
+    _common.random_gradeable_students = lambda svc, rid, n=4: ["JN25PG099"]
+    _common.graded_scopes = lambda svc, campus=None, batch=None: []
+    out = run(Svc(None), student_id=None)
+    check("no graded data anywhere -> found:false 'no graded data'",
+          out.get("found") is False and "graded data" in out.get("note", "").lower())
+    # an explicit out-of-grant campus still denies, even with student omitted
+    check("omit student_id but out-of-grant campus -> PermissionError",
+          raises(lambda: run(Svc(["jaipur"]), student_id=None), PermissionError))
+    _common.graded_scopes = _orig_gs
+    _common.random_gradeable_students = _orig_rgs
+    _common.cached_report_students = _orig_crs
+
     # 4. boot validation: half config / non-https rejected
     def vraises():
         try:
