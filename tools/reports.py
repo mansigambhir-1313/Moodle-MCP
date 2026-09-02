@@ -88,6 +88,56 @@ def _report_impl(svc, p: ReportParams) -> dict:
     }
 
 
+def _onepager_fetch(svc, p: ReportParams):
+    """The production (one-page) report narrative straight from the cache — the
+    same artifact create_report generates, read without an agent round-trip or
+    LLM cost. Returns None when no cached narrative exists (caller falls back to
+    the legacy classic-format tables). Selects explicit columns only: this table
+    also holds the rendered ~1MB html column, which must never ride a tool call."""
+    from tools.common import find_student
+    row = find_student(svc, p.student_id)
+    if not row:
+        return None
+    if (p.campus and row.get("campus") != p.campus) or \
+            (p.batch and row.get("batch") != p.batch):
+        return None
+    run_id = svc.latest_run(row["campus"], row["batch"])
+    if not run_id:
+        return None
+    q = (svc.client.table("onepager_narratives")
+         .select("trimester,narrative,created_at")
+         .eq("run_id", run_id).eq("student_id", p.student_id))
+    if p.trimester:
+        q = q.eq("trimester", str(p.trimester))
+    rows = q.limit(20).execute().data or []
+    if not rows:
+        return None
+    rows.sort(key=lambda r: int(r["trimester"]) if str(r["trimester"]).isdigit() else -1)
+    # Mirror the agent's closed-trimester rule: a just-started trimester (the
+    # headline reads "... of 1/2 subjects") loses to the previous full one.
+    def _n_subjects(r):
+        import re
+        m = re.search(r"of\s+(\d+)\s+subjects", (r.get("narrative") or {}).get("headline", ""))
+        return int(m.group(1)) if m else 99
+    full = [r for r in rows if _n_subjects(r) >= 3]
+    latest = (full or rows)[-1]
+    n = {k: v for k, v in (latest.get("narrative") or {}).items()
+         if not k.startswith("_")}
+    if not n:
+        return None
+    return {
+        "found": True, "format": "onepage",
+        "student": {"student_id": p.student_id, "name": row.get("student_name"),
+                    "campus": row.get("campus"), "batch": row.get("batch")},
+        "trimester": latest.get("trimester"),
+        "narrative": n,
+        "generated_at": latest.get("created_at"),
+        "note": ("Cached production report. create_report regenerates it and returns a "
+                 "shareable link + per-subject table; student_marks / student_attendance "
+                 "have the raw numbers."),
+    }
+
+
 def _availability_impl(svc, p: AvailabilityParams) -> dict:
     """What report data exists per (campus, batch) in the caller's grant: latest
     snapshot time, roster size, and the trimesters covered by that snapshot."""
@@ -133,14 +183,25 @@ def register(mcp, get_service):
     @mcp.tool(title="Get Student Report", annotations=READONLY_ANNOTATIONS)
     async def get_student_report(params: ReportParams) -> dict:
         """
-        WHAT: One student's full validated report — headline, personal pattern, attendance note,
-        the three next moves, per-subject marks vs class, and the report's accuracy score.
+        WHAT: One student's report, read instantly from the cache. Serves the PRODUCTION
+        one-page narrative (headline, personal pattern, attendance line, the four moves) when
+        one exists; falls back to the legacy classic-format report otherwise.
         USE WHEN they say: 'open <id>'s report', 'how did <name> do', 'show me JJ24PG099',
         'what are this student's next steps'.
-        DO NOT USE WHEN searching many students (use search_students) or for cohort stats.
-        RETURNS: student, summary, narrative, subjects, accuracy. found:false if out of scope.
+        DO NOT USE WHEN searching many students (use search_students), for cohort stats, or
+        when they want a FRESH generation / shareable link (use create_report).
+        RETURNS: student, trimester, narrative. found:false if out of scope — then offer
+        create_report, which generates the report on the spot.
         """
-        return _report_impl(await get_service(), params)
+        svc = await get_service()
+        hit = _onepager_fetch(svc, params)
+        if hit is not None:
+            return hit
+        out = _report_impl(svc, params)
+        if not out.get("found"):
+            out["note"] = ("No cached report for this scope yet — create_report will "
+                           "generate it now and return the full content plus a link.")
+        return out
 
     @mcp.tool(title="Report Data Availability", annotations=READONLY_ANNOTATIONS)
     async def report_data_availability(params: AvailabilityParams) -> dict:

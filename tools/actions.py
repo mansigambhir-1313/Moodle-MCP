@@ -24,9 +24,12 @@ MSG_UNCONFIGURED = ("Report generation is not configured on this server "
 MSG_AGENT_DOWN = "The report service could not be reached right now. Please retry shortly."
 # Generation includes one LLM call (~15s) when the insight is not yet cached.
 _TIMEOUT = httpx.Timeout(connect=10.0, read=120.0, write=10.0, pool=10.0)
-# Response fields passed through to the caller — never internal paths.
+# Response fields passed through to the caller — never internal paths. narrative +
+# subject_table carry the COMPLETE report content, so the host renders the report
+# in-conversation instead of only handing the user a link.
 _PASS_FIELDS = ("student_id", "name", "attendance_pct", "ce_pct", "subjects",
-                "insight_headline", "from_cache", "report_url")
+                "insight_headline", "from_cache", "report_url", "trimester",
+                "narrative", "subject_table")
 
 
 # These three values are built into a URL PATH on the agent API, which this tool
@@ -86,13 +89,17 @@ def register(mcp, get_service):
     @mcp.tool(title="Create Student Report", annotations=GENERATE_ANNOTATIONS)
     async def create_report(params: CreateReportParams) -> dict:
         """
-        WHAT: Generate (or refresh) one student's interactive report on demand and return a
-        shareable link (an expiring, unguessable URL — safe to send to the student/mentor).
+        WHAT: Generate (or refresh) one student's report on demand and return it COMPLETE,
+        right here: the validated narrative (headline, personal pattern, attendance line, the
+        four moves) plus the per-subject numbers table — AND a shareable expiring link to the
+        interactive page (unguessable URL, safe to send to the student/mentor).
         USE WHEN they say: 'create/generate the report for <id>', 'make a fresh report',
-        'get me a link I can share for this student', 'regenerate with latest data'.
-        DO NOT USE WHEN they only want to read data (use get_student / get_student_report) —
-        this triggers real generation work. Never emails anyone.
-        RETURNS: name, headline, attendance/CE %, report_url. found:false if the student is
-        not in that scope. Takes ~15s when the insight is not yet cached.
+        'show me the full report', 'get me a link I can share', 'regenerate with latest data'.
+        DO NOT USE WHEN they only want raw data (use get_student / student_marks) or the
+        cached narrative without generating (use get_student_report). Never emails anyone.
+        RETURNS: name, narrative{headline, subtitle, pattern_title, pattern_text,
+        attendance_line, tracks[]}, subject_table[], attendance/CE %, report_url.
+        found:false if the student is not in that scope. ~15s when not yet cached.
+        PRESENT the narrative and subject table to the user in full — that IS the report.
         """
         return await _create_impl(await get_service(), params)
