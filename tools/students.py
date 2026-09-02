@@ -6,7 +6,7 @@ from collections import defaultdict
 from pydantic import BaseModel, Field
 
 from annotations import READONLY_ANNOTATIONS
-from guardrails import clamp_limit, not_found
+from guardrails import enrolled_no_data, clamp_limit, not_found
 from tools.common import (attendance_for, attendance_pct, courses_for, find_student,
                           marks_for, pct)
 
@@ -56,7 +56,7 @@ def _resolve(svc, student_id, trimester):
         return None
     run_id = svc.latest_run(stu["campus"], stu["batch"])
     if not run_id:
-        return None
+        return (stu, None, None)  # enrolled, but no completed run -> no graded data
     courses = courses_for(svc, run_id, trimester)
     return stu, run_id, courses
 
@@ -103,6 +103,8 @@ def _student_impl(svc, p: StudentParams) -> dict:
     if not got:
         return not_found("student")
     stu, run_id, courses = got
+    if run_id is None:
+        return enrolled_no_data(stu)
     cids = list(courses)
     marks = marks_for(svc, run_id, student_id=p.student_id, course_ids=cids)
     att = attendance_for(svc, run_id, student_id=p.student_id, course_ids=cids)
@@ -123,6 +125,8 @@ def _marks_impl(svc, p: StudentParams) -> dict:
     if not got:
         return not_found("student")
     stu, run_id, courses = got
+    if run_id is None:
+        return enrolled_no_data(stu)
     marks = marks_for(svc, run_id, student_id=p.student_id, course_ids=list(courses))
     out = []
     for m in marks:
@@ -142,6 +146,8 @@ def _attendance_impl(svc, p: StudentParams) -> dict:
     if not got:
         return not_found("student")
     stu, run_id, courses = got
+    if run_id is None:
+        return enrolled_no_data(stu)
     att = attendance_for(svc, run_id, student_id=p.student_id, course_ids=list(courses))
     by_course = defaultdict(list)
     for a in att:

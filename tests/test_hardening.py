@@ -426,13 +426,17 @@ def phase7_create_report():
     from tools.actions import CreateReportParams, _create_impl
 
     class Svc:
-        def __init__(self, allowed):
+        def __init__(self, allowed, run="RID"):
             self.allowed = allowed
+            self._run = run
 
         def campus_scope(self, requested):
             if self.allowed is None:
                 return [requested] if requested else None
             return [requested] if requested in self.allowed else []
+
+        def latest_run(self, campus, batch):
+            return self._run if self.campus_scope(campus) != [] else None
 
     def run(svc, monkeypatch_client=None, **kw):
         if monkeypatch_client is not None:
@@ -505,10 +509,26 @@ def phase7_create_report():
           and seen.get("params", {}).get("refresh") == "false"
           and "/generate/noida/2025-27/JN25PG067" in seen.get("url", ""))
 
-    out = run(Svc(None), client_for(FakeResp(404, {})))
-    check("unknown student -> found:false", out.get("found") is False)
+    out = run(Svc(None), client_for(FakeResp(404, {"detail": "student JN25PG067 not in run for noida/2025-27"})))
+    check("agent 404 -> found:false with the agent's real reason",
+          out.get("found") is False and "not in run" in out.get("note", ""))
     check("agent 5xx -> clean ToolError",
           raises(lambda: run(Svc(None), client_for(FakeResp(503, {}))), ToolError))
+
+    # NEW: roster-first, data-second — a batch with no completed run never reaches the agent
+    import tools.common as _common
+    _orig_rm = _common.roster_member
+    _common.roster_member = lambda svc, sid, c, b: {"student_id": sid, "student_name": "Divya U",
+                                                     "campus": c, "batch": b}
+    out = run(Svc(None, run=None))  # latest_run None -> pre-check fires, no HTTP
+    check("enrolled but ungraded -> found:True + has_graded_data:False (not 'no student')",
+          out.get("found") is True and out.get("has_graded_data") is False
+          and "no graded data" in out.get("note", ""))
+    _common.roster_member = lambda svc, sid, c, b: None
+    out = run(Svc(None, run=None))
+    check("genuinely not enrolled here -> found:false with 'not enrolled'",
+          out.get("found") is False and "not enrolled" in out.get("note", "").lower())
+    _common.roster_member = _orig_rm
 
     # 4. boot validation: half config / non-https rejected
     def vraises():

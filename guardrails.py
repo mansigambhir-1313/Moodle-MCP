@@ -17,6 +17,26 @@ def not_found(what: str = "record") -> dict:
     return {"found": False, "note": f"No {what} found for your access scope."}
 
 
+def enrolled_no_data(stu: dict) -> dict:
+    """The student EXISTS and is in the caller's scope (found via the roster), but the
+    batch has no completed gradebook run yet — so there are no marks/attendance/report.
+    Distinct from not_found() so faculty aren't told to re-check a correct enrolment id
+    or suspect a permissions problem. Safe to reveal enrolment here: it is only reached
+    after a campus-scoped roster hit, so it never leaks a student outside the grant."""
+    name = stu.get("student_name") or stu.get("student_id")
+    campus, batch = stu.get("campus"), stu.get("batch")
+    return {
+        "found": True,
+        "has_graded_data": False,
+        "student": {"student_id": stu.get("student_id"), "name": stu.get("student_name"),
+                    "campus": campus, "batch": batch},
+        "note": (f"{name} is enrolled in {campus}/{batch}, but no graded data has been "
+                 "ingested for this batch yet — there are no marks, attendance, percentiles, "
+                 "or report to show. This is expected for a batch early in its first "
+                 "trimester; it becomes available once the gradebook is imported."),
+    }
+
+
 def strip_secrets(row: dict) -> dict:
     if not isinstance(row, dict):
         return row

@@ -65,6 +65,19 @@ def find_student(svc, student_id):
     return rows[0] if rows else None
 
 
+def roster_member(svc, student_id, campus, batch):
+    """The roster row for this exact (student_id, campus, batch) within the caller's scope,
+    or None. Used where campus/batch are given explicitly (e.g. create_report) to tell
+    'enrolled but ungraded' apart from 'not enrolled here'."""
+    if svc.campus_scope(campus) == []:
+        return None
+    rows = (svc.client.table("students")
+            .select("student_id,student_name,campus,batch,section_group")
+            .eq("student_id", student_id).eq("campus", campus).eq("batch", batch)
+            .limit(1).execute()).data or []
+    return rows[0] if rows else None
+
+
 # --- paged fetch past the 1000-row PostgREST cap ------------------------------
 def paged(query_factory, page: int = 1000, cap: int = 100000):
     out, offset = [], 0

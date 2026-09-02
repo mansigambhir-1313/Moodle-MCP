@@ -3,7 +3,7 @@ from pydantic import BaseModel, Field
 
 from annotations import READONLY_ANNOTATIONS
 from config import settings
-from guardrails import clamp_limit, not_found, truncate
+from guardrails import clamp_limit, enrolled_no_data, not_found, truncate
 from tools.common import accuracy_rows, one_report, report_rows, student_label
 
 _CARD = "student_id,full_name,first_name,campus,batch,trimester,status,above_average_count,strongest_subject,subjects_count,personal_pattern_kind"
@@ -197,6 +197,12 @@ def register(mcp, get_service):
         hit = _onepager_fetch(svc, params)
         if hit is not None:
             return hit
+        # roster-first, data-second: an enrolled student in an ungraded batch is not a
+        # missing student — say so, instead of "no report found for your access scope".
+        from tools.common import find_student
+        stu = find_student(svc, params.student_id)
+        if stu is not None and svc.latest_run(stu["campus"], stu["batch"]) is None:
+            return enrolled_no_data(stu)
         out = _report_impl(svc, params)
         if not out.get("found"):
             out["note"] = ("No cached report for this scope yet — create_report will "

@@ -6,7 +6,7 @@ from collections import defaultdict
 from pydantic import BaseModel, Field
 
 from annotations import READONLY_ANNOTATIONS
-from guardrails import clamp_limit, not_found
+from guardrails import clamp_limit, enrolled_no_data, not_found
 from tools.common import (accuracy_rows, attendance_for, attendance_pct, cohort_rollup,
                           courses_for, find_student, marks_for, pct, scope_marks)
 
@@ -62,7 +62,7 @@ def _traj_impl(svc, p: StudentParams) -> dict:
         return not_found("student")
     run_id = svc.latest_run(stu["campus"], stu["batch"])
     if not run_id:
-        return not_found("student")
+        return enrolled_no_data(stu)
     series = _series(svc, run_id, p.student_id, courses_for(svc, run_id))
     return {"found": True, "student_id": p.student_id, "name": stu.get("student_name"),
             "campus": stu.get("campus"), "batch": stu.get("batch"),
@@ -84,7 +84,7 @@ def _360_impl(svc, p: StudentParams) -> dict:
     campus, batch = stu["campus"], stu["batch"]
     run_id = svc.latest_run(campus, batch)
     if not run_id:
-        return not_found("student")
+        return enrolled_no_data(stu)
     all_courses = courses_for(svc, run_id)
     series = _series(svc, run_id, p.student_id, all_courses)
     trend = _trend(series)

@@ -61,6 +61,18 @@ async def _create_impl(svc, p: CreateReportParams) -> dict:
         raise PermissionError(MSG_DENIED)  # campus outside the caller's grant
     if not settings.report_generation_enabled():
         raise ToolError(MSG_UNCONFIGURED)
+    # Roster-first, data-second: a whole batch can be on the roster with no completed
+    # gradebook run (e.g. a first-year batch weeks into term). Answer that truthfully
+    # here instead of letting the agent's generic 404 read as "no such student".
+    from guardrails import enrolled_no_data
+    from tools.common import roster_member
+    if svc.latest_run(p.campus, p.batch) is None:
+        stu = roster_member(svc, p.student_id, p.campus, p.batch)
+        if stu is not None:
+            return enrolled_no_data(stu)
+        return {"found": False,
+                "note": (f"{p.student_id} is not enrolled in {p.campus}/{p.batch} — "
+                         "check the enrolment id, campus and batch.")}
     # belt and braces on top of the validator: URL-encode each path segment
     url = (f"{settings.agent_api_base.rstrip('/')}/generate/"
            f"{quote(p.campus, safe='')}/{quote(p.batch, safe='')}/"
@@ -74,8 +86,16 @@ async def _create_impl(svc, p: CreateReportParams) -> dict:
         log.warning("create_report: agent unreachable: %s", type(e).__name__)
         raise ToolError(MSG_AGENT_DOWN)
     if r.status_code == 404:
+        # surface the agent's real reason (e.g. "student not in run", "no scored
+        # subjects") rather than a blanket "no student" — the batch has a run (checked
+        # above), so this is a student- or data-level miss, not a missing batch.
+        detail = ""
+        try:
+            detail = (r.json() or {}).get("detail", "")
+        except Exception:  # noqa: BLE001
+            detail = ""
         return {"found": False,
-                "note": f"no student {p.student_id} in {p.campus}/{p.batch}"}
+                "note": detail or f"No report data for {p.student_id} in {p.campus}/{p.batch}."}
     if r.status_code != 200:
         log.warning("create_report: agent returned %s", r.status_code)
         raise ToolError(MSG_AGENT_DOWN)
