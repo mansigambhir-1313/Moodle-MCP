@@ -48,6 +48,7 @@ class CreateReportParams(BaseModel):
     campus: str | None = Field(default=None, description="campus within your grant; omit to pick any granted campus with data", max_length=64)
     batch: str | None = Field(default=None, description="batch e.g. '2025-27'; omit for the campus's latest graded batch", max_length=64)
     student_id: str | None = Field(default=None, description="enrolment id e.g. 'JN25PG067'; omit to pick a random student who has graded data", max_length=64)
+    trimester: str | None = Field(default=None, description="target trimester e.g. '3'; omit to auto-pick the latest trimester that has scored subjects for the student", max_length=4)
     refresh: bool = Field(default=False,
                           description="regenerate the insight instead of using the cache")
 
@@ -63,15 +64,32 @@ class CreateReportParams(BaseModel):
             raise ValueError("only letters, digits, '-' and '_' are allowed")
         return v
 
+    @field_validator("trimester")
+    @classmethod
+    def _digit(cls, v):
+        if v is None:
+            return None
+        v = v.strip()
+        if not v:
+            return None  # blank == omitted (auto-pick)
+        if not v.isdigit() or not (1 <= int(v) <= 12):
+            raise ValueError("trimester must be a number 1-12")
+        return v
 
-async def _agent_generate(campus, batch, student_id, refresh):
+
+async def _agent_generate(campus, batch, student_id, refresh, trimester=None):
     """POST the agent /generate for one student. Returns (status_code, json). Raises
-    ToolError only on transport failure / 5xx (never on 404, which is a data-level miss)."""
+    ToolError only on transport failure / 5xx (never on 404, which is a data-level miss).
+    trimester is optional — omit it to let the agent auto-pick the latest trimester
+    that has scored subjects for the student."""
     url = (f"{settings.agent_api_base.rstrip('/')}/generate/"  # segments URL-encoded
            f"{quote(campus, safe='')}/{quote(batch, safe='')}/{quote(student_id, safe='')}")
+    params = {"refresh": str(refresh).lower()}
+    if trimester is not None:
+        params["trimester"] = str(trimester)
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-            r = await client.post(url, params={"refresh": str(refresh).lower()},
+            r = await client.post(url, params=params,
                                   auth=(settings.agent_admin_user, settings.agent_admin_pass))
     except httpx.HTTPError as e:
         log.warning("create_report: agent unreachable: %s", type(e).__name__)
@@ -100,7 +118,7 @@ async def _create_impl(svc, p: CreateReportParams) -> dict:
     if not settings.report_generation_enabled():
         raise ToolError(MSG_UNCONFIGURED)
     from guardrails import enrolled_no_data
-    from tools.common import (cached_report_students, graded_scopes,
+    from tools.common import (cached_report_students, find_student, graded_scopes,
                               random_gradeable_students, roster_member)
 
     campus, batch, student_id = p.campus, p.batch, p.student_id
@@ -118,9 +136,19 @@ async def _create_impl(svc, p: CreateReportParams) -> dict:
                     "note": (f"No graded data is available in {where} yet, so there is no "
                              "student to build a report from. Batches appear here once "
                              "their gradebook run completes.")}
-        if student_id:  # student given, only campus/batch were missing — single scope
-            campus, batch, _ = scopes[0]
-            code, body = await _agent_generate(campus, batch, student_id, p.refresh)
+        if student_id:  # student id given; only campus/batch were omitted.
+            # Locate the student's ACTUAL campus/batch instead of assuming the first
+            # graded scope — a Noida student must never be looked up in Indore's run.
+            loc = find_student(svc, student_id)
+            if loc is None:
+                return {"found": False,
+                        "note": (f"{student_id} was not found in any campus you can access — "
+                                 "check the enrolment id.")}
+            campus, batch = loc["campus"], loc["batch"]
+            if svc.latest_run(campus, batch) is None:
+                return enrolled_no_data(loc)  # enrolled, but no graded run yet
+            code, body = await _agent_generate(campus, batch, student_id, p.refresh,
+                                               trimester=p.trimester)
             if code == 200:
                 return _success(body, campus, batch, auto=False)
             return {"found": False,
@@ -142,7 +170,7 @@ async def _create_impl(svc, p: CreateReportParams) -> dict:
                     candidates.append((c, b, sid))
         last = None
         for c, b, sid in candidates[:8]:  # cap agent round-trips
-            code, body = await _agent_generate(c, b, sid, p.refresh)
+            code, body = await _agent_generate(c, b, sid, p.refresh, trimester=p.trimester)
             if code == 200:
                 return _success(body, c, b, auto=True)
             last = body.get("detail") or last
@@ -163,7 +191,8 @@ async def _create_impl(svc, p: CreateReportParams) -> dict:
         return {"found": False,
                 "note": (f"{student_id} is not enrolled in {campus}/{batch} — "
                          "check the enrolment id, campus and batch.")}
-    code, body = await _agent_generate(campus, batch, student_id, p.refresh)
+    code, body = await _agent_generate(campus, batch, student_id, p.refresh,
+                                       trimester=p.trimester)
     if code == 404:
         return {"found": False,
                 "note": body.get("detail") or f"No report data for {student_id} in {campus}/{batch}."}
@@ -181,9 +210,13 @@ def register(mcp, get_service):
         ALL PARAMETERS ARE OPTIONAL. Omit student_id to have a random student WITH graded data
         picked for you; omit batch for the campus's latest graded batch; omit campus for any
         campus in your grant that has data. So 'a report for any student in noida' -> pass
-        campus="noida" only; 'a report for any student' -> pass nothing. When a student is
-        auto-picked the response sets auto_selected:true — tell the user which student (name +
-        id) you generated for.
+        campus="noida" only; 'a report for any student' -> pass nothing. When only student_id
+        is given, the tool finds that student's own campus/batch automatically — you do NOT
+        need to know their campus. Omit trimester to auto-pick the latest trimester that has
+        scored subjects (so a student mid-trimester still reports on their last graded one);
+        pass trimester (e.g. '3') only to force a specific one. When a student is auto-picked
+        the response sets auto_selected:true — tell the user which student (name + id) you
+        generated for.
         USE WHEN they say: 'create/generate the report for <id>', 'report for any/a random
         student [in <campus>]', 'make a fresh report', 'get me a link I can share'.
         DO NOT USE WHEN they only want raw data (use get_student / student_marks) or the
