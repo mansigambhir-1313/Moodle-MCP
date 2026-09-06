@@ -177,6 +177,12 @@ app.routes.insert(0, Route("/brand/logo.png", brand_logo, methods=["GET"]))
 from oauth_compat import PathAliases
 app = PathAliases(app)
 
+# Scope tolerance: accept the short OIDC names 'email'/'profile' (rewriting them to the
+# full Google scope URLs) on the OAuth endpoints, so a client that requests the short
+# names isn't rejected at DCR/authorize. See oauth_compat.ScopeNormalizer.
+from oauth_compat import ScopeNormalizer
+app = ScopeNormalizer(app)
+
 # Transport gate. Static-token mode: reject tokenless /mcp requests with a real 401 (blocks
 # unauthenticated tool enumeration) before JSON-RPC; /health stays open. OAuth mode: FastMCP's
 # auth layer owns token validation and the 401/WWW-Authenticate discovery handshake, and its

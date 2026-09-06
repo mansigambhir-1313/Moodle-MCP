@@ -21,8 +21,10 @@ any faculty member adding the server):
 Pinned to fastmcp==2.14.7 (requirements.txt): the tolerant override mirrors that
 version's storage internals.
 """
+import json
 import logging
 import time
+from urllib.parse import parse_qsl, urlencode
 
 from fastmcp.server.auth.providers.google import GoogleProvider
 from mcp.server.auth.provider import AuthorizationCode
@@ -30,6 +32,27 @@ from mcp.shared.auth import OAuthClientInformationFull
 from pydantic import AnyUrl
 
 log = logging.getLogger("moodle-mcp.oauth_compat")
+
+# The Google provider only accepts the fully-qualified userinfo scope URLs; a client
+# that requests the short OIDC names 'email' / 'profile' is rejected at DCR ("scopes
+# are not valid") and at /authorize ("client was not registered with scope email").
+# Codex uses the server-advertised scopes so it's unaffected, but any client that
+# sends the short names would fail. Normalize them to the full URLs at the edge so
+# every client works, whichever form it sends. 'openid' is already accepted as-is.
+_SCOPE_ALIASES = {
+    "email": "https://www.googleapis.com/auth/userinfo.email",
+    "profile": "https://www.googleapis.com/auth/userinfo.profile",
+}
+# Endpoints that carry a `scope`: /authorize (query), /register + /token (body).
+_SCOPE_PATHS = ("/authorize", "/register", "/token")
+
+
+def _normalize_scope(scope: str) -> str:
+    """Rewrite short OIDC scope names to the full Google URLs; leave everything else
+    (openid, already-full URLs, unknown scopes) untouched. Order/dupes preserved."""
+    if not scope or not scope.strip():
+        return scope
+    return " ".join(_SCOPE_ALIASES.get(tok, tok) for tok in scope.split())
 
 # Exact-path rewrites applied before routing. Kept deliberately tiny and explicit.
 PATH_ALIASES = {
@@ -58,6 +81,89 @@ class PathAliases:
                 scope["path"] = target
                 scope["raw_path"] = target.encode()
         return await self.app(scope, receive, send)
+
+
+class ScopeNormalizer:
+    """ASGI wrapper: rewrite short OIDC scope names ('email'/'profile') to the full
+    Google scope URLs on the OAuth endpoints, before FastMCP validates them — so a
+    client that sends the short names is accepted instead of rejected. Touches only
+    /authorize (query string) and /register + /token (request body); every other
+    request passes straight through. Fail-open: any parse error leaves the request
+    untouched so the OAuth flow is never broken by this hook."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http" or scope.get("path", "") not in _SCOPE_PATHS:
+            return await self.app(scope, receive, send)
+
+        # /authorize carries scope in the query string (GET) — rewrite in place.
+        if scope.get("method") == "GET":
+            try:
+                qs = scope.get("query_string", b"").decode()
+                if "scope=" in qs:
+                    pairs = parse_qsl(qs, keep_blank_values=True)
+                    new = [(k, _normalize_scope(v) if k == "scope" else v) for k, v in pairs]
+                    if new != pairs:
+                        scope = dict(scope)
+                        scope["query_string"] = urlencode(new).encode()
+            except Exception:  # noqa: BLE001 — never break the flow
+                log.warning("scope query normalize skipped", exc_info=True)
+            return await self.app(scope, receive, send)
+
+        # /register (JSON) and /token (form) carry scope in the body — buffer, rewrite,
+        # replay with a corrected Content-Length.
+        if scope.get("method") == "POST":
+            try:
+                body = b""
+                while True:
+                    msg = await receive()
+                    body += msg.get("body", b"")
+                    if not msg.get("more_body"):
+                        break
+                new_body = self._rewrite_body(scope, body)
+                if new_body != body:
+                    headers = [(k, v) for k, v in scope.get("headers", [])
+                               if k.lower() != b"content-length"]
+                    headers.append((b"content-length", str(len(new_body)).encode()))
+                    scope = dict(scope)
+                    scope["headers"] = headers
+                replayed = False
+
+                async def _receive():
+                    nonlocal replayed
+                    if not replayed:
+                        replayed = True
+                        return {"type": "http.request", "body": new_body, "more_body": False}
+                    return {"type": "http.disconnect"}
+
+                return await self.app(scope, _receive, send)
+            except Exception:  # noqa: BLE001 — never break the flow
+                log.warning("scope body normalize skipped", exc_info=True)
+                return await self.app(scope, receive, send)
+
+        return await self.app(scope, receive, send)
+
+    @staticmethod
+    def _rewrite_body(scope, body: bytes) -> bytes:
+        ct = b""
+        for k, v in scope.get("headers", []):
+            if k.lower() == b"content-type":
+                ct = v.lower()
+                break
+        if b"json" in ct:
+            data = json.loads(body or b"{}")
+            if isinstance(data.get("scope"), str):
+                fixed = _normalize_scope(data["scope"])
+                if fixed != data["scope"]:
+                    data["scope"] = fixed
+                    return json.dumps(data).encode()
+            return body
+        # default: form-encoded (application/x-www-form-urlencoded)
+        pairs = parse_qsl(body.decode(), keep_blank_values=True)
+        new = [(k, _normalize_scope(v) if k == "scope" else v) for k, v in pairs]
+        return urlencode(new).encode() if new != pairs else body
 
 
 class TolerantGoogleProvider(GoogleProvider):
