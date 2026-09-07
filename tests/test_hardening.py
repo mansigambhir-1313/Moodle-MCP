@@ -434,7 +434,7 @@ def phase6_oauth_compat():
           not rejected.get("called") and rejected_sent
           and rejected_sent[0].get("status") == 400)
 
-    # --- TolerantGoogleProvider: client mismatch tolerated only with PKCE -----
+    # --- Cross-client redemption is deny-by-default and tightly allowlisted ---
     provider = TolerantGoogleProvider(
         client_id="x.apps.googleusercontent.com", client_secret="GOCSPX-x",
         base_url="https://mcp.example.com",
@@ -469,7 +469,13 @@ def phase6_oauth_compat():
     check("same-client exchange loads code",
           same is not None and same.code_challenge == "challenge123")
     cross = asyncio.run(provider.load_authorization_code(ClientB(), "code1"))
-    check("cross-client exchange tolerated WITH PKCE (race fix)",
+    check("cross-client exchange rejected by default even with PKCE", cross is None)
+
+    import config as _config
+    _config.settings.oauth_allow_cross_client_pkce = True
+    _config.settings.oauth_redirect_hosts_raw = "claude.ai"
+    cross = asyncio.run(provider.load_authorization_code(ClientB(), "code1"))
+    check("explicit exception accepts PKCE only on approved redirect host",
           cross is not None and cross.client_id == "client-B"
           and cross.code_challenge == "challenge123")
 
@@ -496,6 +502,8 @@ def phase6_oauth_compat():
     provider._code_store = EmptyStore(None)
     check("unknown code rejected",
           asyncio.run(provider.load_authorization_code(ClientA(), "nope")) is None)
+    _config.settings.oauth_allow_cross_client_pkce = False
+    _config.settings.oauth_redirect_hosts_raw = ""
 
     # --- validation errors surface as clean parameter messages ---------------
     from pydantic import BaseModel, Field
@@ -580,7 +588,8 @@ def phase7_create_report():
 
     # 3. configured: agent responses are proxied, internals filtered
     os.environ.update({"AGENT_API_BASE": "https://agent.example.com",
-                       "AGENT_ADMIN_USER": "u", "AGENT_ADMIN_PASS": "p"})
+                       "AGENT_ADMIN_USER": "u", "AGENT_ADMIN_PASS": "p",
+                       "AGENT_REPORT_QUEUE": "false"})
     importlib.reload(cfgmod)
     actions.settings = cfgmod.settings
 

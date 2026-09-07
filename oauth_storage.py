@@ -7,13 +7,13 @@ home, which is EPHEMERAL on Render: every deploy wiped it, invalidating every
 issued token and forcing all signed-in faculty back through Google.
 
 This module provides a Supabase-backed store (table: mcp_oauth_kv) and wraps
-it in the same FernetEncryptionWrapper FastMCP uses for its own default —
-with the encryption key derived from OAUTH_JWT_SIGNING_KEY exactly the way
-FastMCP derives it — so every value in the database is ciphertext. The
-signing key lives only in the Render env: a DB leak yields no usable tokens.
+it in the same FernetEncryptionWrapper FastMCP uses for its own default.
+OAuth state uses a dedicated database role and an independent
+OAUTH_STORAGE_ENCRYPTION_KEY, so rotating access-token signing keys does not
+destroy sessions and a data-reader compromise cannot mutate OAuth state.
 
-The MCP's DB role (reporting_readonly) has CRUD on this ONE operational table
-and remains SELECT-only on all student data (enforced by grants + RLS).
+The dedicated ``mcp_oauth_writer`` role has CRUD on this one operational table
+and no access to student data (enforced by grants + RLS).
 """
 import logging
 import random
@@ -94,27 +94,28 @@ class SupabaseKVStore(BaseStore):
 
 
 def build_oauth_storage(settings):
-    """FernetEncryptionWrapper(SupabaseKVStore) with the encryption key derived
-    from OAUTH_JWT_SIGNING_KEY exactly as FastMCP derives it for its own default
-    store (jwt-signing-key derivation, then the storage-encryption salt) — the
-    same env value therefore decrypts the same rows across every deploy.
-    Returns None when prerequisites are missing (FastMCP falls back to its
-    ephemeral default, i.e. today's behaviour)."""
-    if not (settings.supabase_url and settings.supabase_service_role_key
-            and settings.oauth_jwt_signing_key):
+    """Build the encrypted store only when both dedicated credentials exist.
+
+    There is intentionally no fallback to the student-data key or OAuth JWT
+    signing key: those credentials have different rotation and blast-radius
+    requirements.
+    """
+    storage_key = settings.oauth_storage_key()
+    encryption_material = settings.oauth_storage_encryption_key
+    if not (settings.supabase_url and storage_key and encryption_material):
+        if settings.oauth_enabled():
+            log.warning("OAuth persistence disabled until SUPABASE_OAUTH_STORAGE_KEY and "
+                        "OAUTH_STORAGE_ENCRYPTION_KEY are configured")
         return None
     from cryptography.fernet import Fernet
     from fastmcp.server.auth.jwt_issuer import derive_jwt_key
     from key_value.aio.wrappers.encryption import FernetEncryptionWrapper
 
-    signing_key_bytes = derive_jwt_key(
-        low_entropy_material=settings.oauth_jwt_signing_key,
-        salt="fastmcp-jwt-signing-key")
     storage_key = derive_jwt_key(
-        high_entropy_material=signing_key_bytes.decode(),
-        salt="fastmcp-storage-encryption-key")
+        low_entropy_material=encryption_material,
+        salt="moodle-mcp-oauth-storage-encryption-v1")
     store = SupabaseKVStore(
         url=settings.supabase_url,
-        apikey=settings.supabase_anon_key or settings.supabase_service_role_key,
-        bearer=settings.supabase_service_role_key)
+        apikey=settings.supabase_anon_key or settings.oauth_storage_key(),
+        bearer=settings.oauth_storage_key())
     return FernetEncryptionWrapper(key_value=store, fernet=Fernet(key=storage_key))

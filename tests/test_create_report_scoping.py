@@ -18,6 +18,7 @@ os.environ.setdefault("SUPABASE_SERVICE_ROLE_KEY", "test-key")
 os.environ.setdefault("AGENT_API_BASE", "https://agent.example.com")
 os.environ.setdefault("AGENT_ADMIN_USER", "u")
 os.environ.setdefault("AGENT_ADMIN_PASS", "p")
+os.environ.setdefault("AGENT_REPORT_QUEUE", "false")
 
 import tools.common as common  # noqa: E402
 from tools import actions  # noqa: E402
@@ -60,7 +61,7 @@ def test_locates_students_own_campus(monkeypatch=None):
         {"student_id": sid, "student_name": "Aashna Gupta", "campus": "noida",
          "batch": "2025-27", "section_group": None} if sid == "JN25MM002" else None)
 
-    async def fake_gen(campus, batch, student_id, refresh, trimester=None):
+    async def fake_gen(campus, batch, student_id, refresh, trimester=None, principal=None):
         calls["scope"] = (campus, batch)
         calls["trimester"] = trimester
         return 200, {"student_id": student_id, "name": "Aashna Gupta", "trimester": "3"}

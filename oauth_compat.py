@@ -48,7 +48,7 @@ _SCOPE_ALIASES = {
 _SCOPE_PATHS = ("/authorize", "/register", "/token")
 
 
-def _safe_redirect_uri(uri: object) -> bool:
+def _safe_redirect_uri(uri: object, allowed_https_hosts: set[str] | None = None) -> bool:
     """Allow browser HTTPS callbacks and native-client loopback HTTP only.
 
     Dynamic client registration is public by design, so accepting active-content
@@ -70,7 +70,9 @@ def _safe_redirect_uri(uri: object) -> bool:
         return False
     host = parsed.hostname
     if parsed.scheme == "https":
-        return bool(host)
+        return bool(host) and (
+            not allowed_https_hosts or host.lower() in allowed_https_hosts
+        )
     if parsed.scheme != "http" or not host:
         return False
     if host.lower() == "localhost":
@@ -90,8 +92,11 @@ class RegistrationGuard:
     callback URI schemes and hosts.
     """
 
-    def __init__(self, app):
+    def __init__(self, app, allowed_https_hosts: list[str] | None = None):
         self.app = app
+        self.allowed_https_hosts = {
+            host.strip().lower() for host in (allowed_https_hosts or []) if host.strip()
+        }
 
     async def __call__(self, scope, receive, send):
         if (scope.get("type") != "http" or scope.get("path") != "/register"
@@ -115,7 +120,8 @@ class RegistrationGuard:
             redirects = document.get("redirect_uris") if isinstance(document, dict) else None
             if (redirects is not None
                     and (not isinstance(redirects, list) or not redirects
-                         or not all(_safe_redirect_uri(uri) for uri in redirects))):
+                         or not all(_safe_redirect_uri(uri, self.allowed_https_hosts)
+                                    for uri in redirects))):
                 return await self._reject(send)
         except (UnicodeDecodeError, json.JSONDecodeError):
             pass
@@ -308,10 +314,16 @@ class TolerantGoogleProvider(GoogleProvider):
                 # No PKCE -> the client binding is the only protection; keep it.
                 log.warning("code client mismatch without PKCE — rejecting")
                 return None
+            from config import settings
+            if not settings.oauth_allow_cross_client_pkce:
+                log.warning("code client mismatch with PKCE — compatibility exception disabled")
+                return None
+            redirect_host = urlsplit(str(code_model.redirect_uri)).hostname or ""
+            if redirect_host.lower() not in set(settings.oauth_redirect_hosts()):
+                log.warning("code client mismatch for unapproved redirect host — rejecting")
+                return None
             log.info(
-                "tolerating client mismatch at /token (authorized=%s exchanging=%s); "
-                "PKCE still enforced",
-                code_model.client_id, client.client_id,
+                "tolerating approved client mismatch at /token; PKCE still enforced"
             )
         if client.client_id is None:
             return None

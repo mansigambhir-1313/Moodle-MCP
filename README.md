@@ -6,7 +6,7 @@ Codex, ChatGPT, Claude.ai, Claude CLI) and ask about student marks, attendance, 
 analytics, longitudinal trends, at-risk students, and report accuracy — every ingested student,
 scoped to the caller's campuses.
 
-**Live:** `https://moodle-mcp.tryrehearsal.ai/mcp` · **Health:** `/health` · **Tools:** 26
+**Endpoint:** `https://moodle-mcp.tryrehearsal.ai/mcp` · **Health:** `/health` · **Source tools:** 27
 **Repo:** `github.com/mansigambhir-1313/Moodle-MCP` · **Owner:** Jaipuria AI Labs
 
 ---
@@ -16,7 +16,7 @@ scoped to the caller's campuses.
 The pipeline in [`moodle-agent`](../moodle-agent) ingests Moodle data, computes analytics, and
 generates validated student reports into a Supabase project. This MCP is the **read side** of that
 project for faculty and the programme office: it exposes the raw data and the pipeline's outputs as
-25 structured query tools plus one report-generation action that a host LLM routes on.
+26 structured query/status tools plus one report-generation action that a host LLM routes on.
 
 It is **data-first** — the primary surface is the raw gradebook and attendance (queryable for
 *every* student, report or not); the generated reports and their two-scheme accuracy scores are a
@@ -51,7 +51,7 @@ faculty model**.
 
 ---
 
-## Tools (26)
+## Tools (27)
 
 Every data tool is `SELECT`-only, campus-scoped to the caller, bounded, and carries a
 `WHAT / USE WHEN / DO NOT USE / RETURNS` routing docstring. `create_report` is separately marked
@@ -100,12 +100,13 @@ as a non-destructive write action.
 |---|---|
 | `get_student_report` | The generated narrative report for a student |
 | `report_data_availability` | Whether enough source data exists to generate a report |
+| `get_report_job` | Status/result for a durable report job created by `create_report` |
 | `whoami` | The caller's principal and allowed campuses |
 
 ### Action (write)
 | Tool | What it does |
 |---|---|
-| `create_report` | Delegates one on-demand report generation to the authenticated report service |
+| `create_report` | Queues one idempotent report job; returns a request id for `get_report_job` |
 
 See [`docs/INNOVATION_ROADMAP.md`](docs/INNOVATION_ROADMAP.md) for Phase-3 ideas
 (`attendance_eligibility`, `attendance_marks_link`, `anomalies`, `roster_health`).
@@ -164,7 +165,10 @@ boot check on the Supabase vars.
 | Variable | Description | Where to get it |
 |---|---|---|
 | `SUPABASE_URL` | Report project URL (`https://sadbfvfcmmxgtatfjfmc.supabase.co`) | Supabase → Settings → API |
-| `SUPABASE_SERVICE_ROLE_KEY` | Read service key (server-side only, never exposed) | Supabase → Settings → API · also in `moodle-agent/.env` |
+| `SUPABASE_DATA_KEY` | Custom `reporting_readonly` JWT; legacy service-role fallback is temporary | Supabase signing key + SQL role |
+| `SUPABASE_OAUTH_STORAGE_KEY` | Custom JWT restricted to encrypted `mcp_oauth_kv` CRUD | Supabase signing key + SQL role |
+| `SUPABASE_AUDIT_KEY` | Custom JWT restricted to the audit RPC | Supabase signing key + SQL role |
+| `SUPABASE_ANON_KEY` | Gateway key used with the three custom-role JWTs | Supabase → Settings → API |
 | `MCP_TOKENS` | JSON map of faculty tokens → `{name, campuses}` (see below) | You generate it |
 | `MCP_ADMIN_TOKEN` | Single all-campus break-glass token (alternative to `MCP_TOKENS`) | You generate it |
 | `REPORT_PUBLIC_BASE_URL` | Base for report links (default `https://reports.tryrehearsal.ai`) | — |
@@ -210,7 +214,7 @@ MCP host (Codex / ChatGPT / Claude / dashboard)
 server.py (FastMCP /mcp, /health)
   get_authenticated_service()  → verify token → MoodleService(allowed_campuses)
         │
-  tools/* (7 modules, 26 tools) — each: Params model + _impl(svc,…) + register()
+  tools/* (7 modules, 27 tools) — each: Params model + _impl(svc,…) + register()
         │  every query .in_("campus", allowed) ; strip_secrets ; response budgets
         ▼
 Supabase (read service role) — students · courses · enrolments · marks ·
@@ -240,12 +244,13 @@ rollups). Cohort tools page past PostgREST's 1000-row cap and cache the result f
 
 ## Deployment
 
-- **Render** (`render.yaml` blueprint or Docker): Python 3.12 / Docker, `uvicorn server:app`,
-  health check `/health`. Set `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `MCP_TOKENS` in the
-  dashboard.
+- **Render** (`render.yaml` blueprint or Docker): paid always-on web instances, shared Redis,
+  `uvicorn server:app`, health check `/health`. Configure the split Supabase credentials, OAuth,
+  audit HMAC, and signed report-queue secret described in
+  [`docs/SECURITY_SCALABILITY_RELEASE.md`](docs/SECURITY_SCALABILITY_RELEASE.md).
 - **Docker:** `docker build -t moodle-mcp . && docker run -p 8000:8000 --env-file .env moodle-mcp`
-- Current prod is on the **Free** instance (spins down after ~15 min idle → ~50s cold start).
-  Upgrade to Starter for always-on.
+- The production blueprint uses a **Standard** instance to remove free-tier cold starts and permit
+  horizontal scaling after load-test evidence supports it.
 
 | Environment | URL | Notes |
 |---|---|---|
@@ -268,8 +273,8 @@ to `MCP_TOKENS`, redeploy, hand them their token.
 `register()`, campus-scope every query, `strip_secrets`, write the routing docstring, register in
 `server.py`. Reuse the raw-data helpers in `tools/common.py`.
 
-**Cold start / first request slow** — Free instance woke from idle (~50s). Warm it with
-`curl <url>/health`, or upgrade the instance.
+**Unexpected cold start / first request slow** — verify the live service actually uses the paid
+blueprint plan and that the health check is passing; `/health` is safe for an uptime probe.
 
 **Verify a deploy** — `curl <url>/health`, then
 `MCP_URL="<url>/mcp" MCP_TOKEN="<token>" python test_client.py`.
@@ -297,13 +302,14 @@ per-token **`expires`** (ISO date/datetime) so a grant can be **revoked by date 
 Boot is **fail-closed**: malformed token config, a token `<24` chars (unless `ALLOW_WEAK_TOKENS`), or
 a bad `expires` format all crash the process loudly.
 
-### Least-privilege DB role
-The MCP reads with the key in `SUPABASE_SERVICE_ROLE_KEY`. Prefer a **SELECT-only** credential over
+### Least-privilege DB roles
+The MCP reads with the key in `SUPABASE_DATA_KEY`. Use a **SELECT-only** credential instead of
 the full `service_role` key (which bypasses RLS and can write): apply
 [`sql/2026-08-26_reporting_readonly_role.sql`](sql/2026-08-26_reporting_readonly_role.sql), then mint
 a JWT with `{"role":"reporting_readonly"}` signed with the project JWT secret and set it as the key.
 PostgREST then runs every query as a role that **physically cannot write**. The server logs a warning
-at boot whenever it detects a full `service_role` key still in use.
+at boot whenever it detects a full `service_role` key still in use. OAuth state and audit delivery
+use separate `mcp_oauth_writer` and `mcp_audit_writer` credentials.
 
 **Data invariants:** read-only data queries · one explicitly annotated report-generation action ·
 campus-scope every query · uniform `{"found": false}`

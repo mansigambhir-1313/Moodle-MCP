@@ -21,6 +21,7 @@ log = logging.getLogger("moodle-mcp.security")
 MSG_DENIED = "Access denied for your token."
 MSG_RATE = "Rate limit exceeded — please slow down and retry shortly."
 MSG_ERROR = "This query could not be completed right now. Please retry."
+MSG_AUDIT = "The audit service is unavailable, so this request was not executed. Please retry."
 
 
 def quiet_noisy_loggers() -> None:
@@ -173,7 +174,7 @@ def resolve_oauth_principal():
 class RateLimiter:
     """Per-key sliding window. Bounded in memory (LRU-evicts idle keys) — OOM-safe."""
 
-    def __init__(self, limit: int, window: float, maxkeys: int = 4096):
+    def __init__(self, limit: int, window: float, maxkeys: int = 16384):
         self.limit = max(1, int(limit))
         self.window = float(window)
         self.maxkeys = maxkeys
@@ -197,16 +198,105 @@ class RateLimiter:
         return True, 0.0
 
 
+class SharedRateLimiter:
+    """Redis-backed limiter with a bounded local fallback for dependency outages."""
+
+    _SCRIPT = """
+local current = redis.call('INCR', KEYS[1])
+if current == 1 then redis.call('PEXPIRE', KEYS[1], ARGV[1]) end
+local ttl = redis.call('PTTL', KEYS[1])
+return {current, ttl}
+"""
+
+    def __init__(self, limit: int, window: float, *, maxkeys: int = 16384,
+                 redis_url: str = "", prefix: str = "moodle-mcp"):
+        self.limit = max(1, int(limit))
+        self.window = float(window)
+        self.local = RateLimiter(limit, window, maxkeys=maxkeys)
+        self.prefix = prefix
+        self.redis = None
+        if redis_url:
+            try:
+                import redis.asyncio as redis
+                self.redis = redis.from_url(redis_url, decode_responses=False)
+            except Exception:  # noqa: BLE001 — local limiter remains active
+                log.exception("Redis rate limiter initialization failed; using local fallback")
+
+    async def allow(self, key: str) -> tuple[bool, float]:
+        if self.redis is None:
+            return self.local.allow(key)
+        digest = hashlib.sha256(key.encode()).hexdigest()
+        redis_key = f"{self.prefix}:{digest}"
+        try:
+            count, ttl_ms = await self.redis.eval(
+                self._SCRIPT, 1, redis_key, max(1, round(self.window * 1000)))
+            return int(count) <= self.limit, max(0.0, int(ttl_ms) / 1000)
+        except Exception:  # noqa: BLE001 — retain protection during Redis outages
+            log.warning("Redis rate limiter unavailable; using local fallback")
+            return self.local.allow(key)
+
+
 # --- audit ------------------------------------------------------------------
 def audit(tool: str, principal, *, ok: bool, scope=None, note: str = "") -> None:
-    """One structured line per authenticated tool call. NEVER logs tokens, student ids, names,
-    or any PII value — only who (principal name), which tool, campus scope, and outcome."""
-    who = principal.get("name", "?") if isinstance(principal, dict) else "anon"
-    log.info("audit tool=%s who=%s ok=%s scope=%s%s",
-             tool, who, "1" if ok else "0", scope or "-", f" note={note}" if note else "")
+    """Legacy synchronous fallback; stores only a pseudonymous subject."""
+    from audit_store import principal_subject
+    who = principal_subject(principal)
+    log.info("audit tool=%s subject=%s ok=%s scope=%s%s",
+             tool, who[:16], "1" if ok else "0", scope or "-",
+             f" note={note}" if note else "")
 
 
 # --- ASGI transport gate ----------------------------------------------------
+class SecurityHeaders:
+    """Apply baseline browser and cache protections to every HTTP response."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http":
+            return await self.app(scope, receive, send)
+
+        async def protected_send(message):
+            if message.get("type") == "http.response.start":
+                headers = list(message.get("headers") or [])
+                present = {k.lower() for k, _ in headers}
+                additions = {
+                    b"x-content-type-options": b"nosniff",
+                    b"x-frame-options": b"DENY",
+                    b"referrer-policy": b"no-referrer",
+                    b"strict-transport-security": b"max-age=31536000; includeSubDomains",
+                }
+                if scope.get("path") in ("/mcp", "/token", "/authorize", "/auth/callback"):
+                    additions[b"cache-control"] = b"no-store"
+                for key, value in additions.items():
+                    if key not in present:
+                        headers.append((key, value))
+                message = dict(message)
+                message["headers"] = headers
+            await send(message)
+
+        return await self.app(scope, receive, protected_send)
+
+
+class HostGuard:
+    """Reject alternate public origins so edge controls cannot be bypassed."""
+
+    def __init__(self, app, allowed_hosts: list[str] | None = None):
+        self.app = app
+        self.allowed_hosts = {host.lower() for host in (allowed_hosts or [])}
+
+    async def __call__(self, scope, receive, send):
+        if (scope.get("type") != "http" or not self.allowed_hosts
+                or scope.get("path") == "/health"):
+            return await self.app(scope, receive, send)
+        headers = {k.decode().lower(): v.decode() for k, v in (scope.get("headers") or [])}
+        host = headers.get("host", "").split(":", 1)[0].lower()
+        if host not in self.allowed_hosts:
+            return await _send_json(send, 421, {"error": "misdirected_request"})
+        return await self.app(scope, receive, send)
+
+
 async def _send_json(send, status: int, payload: dict, extra: dict | None = None) -> None:
     body = json.dumps(payload).encode()
     headers = [(b"content-type", b"application/json"),
@@ -241,7 +331,8 @@ class TransportGuard:
 
     def __init__(self, app, open_paths=("/health",), max_body: int = 262144,
                  ip_rate_limit: int = 240, ip_window: float = 60.0,
-                 check_bearer: bool = True):
+                 check_bearer: bool = True, maxkeys: int = 16384,
+                 redis_url: str = "", trust_proxy_headers: bool = False):
         # check_bearer=False (OAuth mode): FastMCP's auth layer owns token
         # validation and the 401 + WWW-Authenticate resource-metadata handshake
         # the MCP OAuth discovery flow depends on, and the OAuth endpoints
@@ -250,8 +341,11 @@ class TransportGuard:
         self.app = app
         self.open_paths = set(open_paths)
         self.max_body = max_body
-        self.ip_limiter = RateLimiter(ip_rate_limit, ip_window) if ip_rate_limit else None
+        self.ip_limiter = SharedRateLimiter(
+            ip_rate_limit, ip_window, maxkeys=maxkeys, redis_url=redis_url,
+            prefix="moodle-mcp:ip") if ip_rate_limit else None
         self.check_bearer = check_bearer
+        self.trust_proxy_headers = trust_proxy_headers
 
     async def __call__(self, scope, receive, send):
         if scope.get("type") != "http":
@@ -274,7 +368,9 @@ class TransportGuard:
         # 2. per-IP pre-auth rate limit (fail-open)
         if self.ip_limiter is not None:
             try:
-                allowed, _retry = self.ip_limiter.allow(client_ip(scope, headers))
+                ip = client_ip(scope, headers) if self.trust_proxy_headers else (
+                    scope.get("client", ("unknown",))[0] if scope.get("client") else "unknown")
+                allowed, _retry = await self.ip_limiter.allow(ip)
                 if not allowed:
                     return await _send_json(send, 429, {"error": "rate_limited"})
             except Exception:  # noqa: BLE001
@@ -330,7 +426,10 @@ def build_middleware(rate_limit: int, window: float):
     from fastmcp.server.middleware import Middleware
     from pydantic import ValidationError
 
-    limiter = RateLimiter(rate_limit, window)
+    from config import settings
+    limiter = SharedRateLimiter(rate_limit, window, maxkeys=settings.rate_limit_max_keys,
+                                redis_url=settings.redis_url,
+                                prefix="moodle-mcp:principal")
 
     def _principal():
         try:
@@ -361,15 +460,30 @@ def build_middleware(rate_limit: int, window: float):
         async def on_call_tool(self, context, call_next):
             name = getattr(context.message, "name", "?")
             principal = _principal()
-            ok, _retry = limiter.allow(_rate_key())
+            headers = get_http_headers() or {}
+            started = time.monotonic()
+            from audit_store import record_tool_call
+            if settings.require_audit:
+                recorded = await record_tool_call(
+                    tool=name, principal=principal, ok=None, started=started,
+                    headers=headers, scope=_scope(context))
+                if not recorded:
+                    raise ToolError(MSG_AUDIT)
+            ok, _retry = await limiter.allow(_rate_key())
             if not ok:
-                audit(name, principal, ok=False, note="rate_limited")
+                await record_tool_call(tool=name, principal=principal, ok=False,
+                                       started=started, headers=headers,
+                                       scope=_scope(context), error_code="rate_limited")
                 raise ToolError(MSG_RATE)
             try:
                 result = await call_next(context)
-                audit(name, principal, ok=True, scope=_scope(context))
+                await record_tool_call(tool=name, principal=principal, ok=True,
+                                       started=started, headers=headers, scope=_scope(context))
                 return result
             except ToolError:
+                await record_tool_call(tool=name, principal=principal, ok=False,
+                                       started=started, headers=headers,
+                                       scope=_scope(context), error_code="tool_error")
                 raise  # already a clean, caller-safe message
             except ValidationError as e:
                 # Caller sent bad/missing parameters. Tell them WHICH — this is
@@ -377,15 +491,21 @@ def build_middleware(rate_limit: int, window: float):
                 # the call instead of uselessly retrying a "server error".
                 first = (e.errors() or [{}])[0]
                 loc = ".".join(str(x) for x in first.get("loc", ())) or "params"
-                audit(name, principal, ok=False, note="bad_params")
+                await record_tool_call(tool=name, principal=principal, ok=False,
+                                       started=started, headers=headers,
+                                       scope=_scope(context), error_code="bad_params")
                 raise ToolError(f"Invalid parameters — {loc}: "
                                 f"{first.get('msg', 'validation failed')}")
             except PermissionError:
-                audit(name, principal, ok=False, note="unauthorized")
+                await record_tool_call(tool=name, principal=principal, ok=False,
+                                       started=started, headers=headers,
+                                       scope=_scope(context), error_code="unauthorized")
                 raise ToolError(MSG_DENIED)
             except Exception:  # noqa: BLE001 - the point is to never leak internals
                 log.exception("tool %s failed", name)
-                audit(name, principal, ok=False, note="error")
+                await record_tool_call(tool=name, principal=principal, ok=False,
+                                       started=started, headers=headers,
+                                       scope=_scope(context), error_code="internal_error")
                 raise ToolError(MSG_ERROR)
 
     return GuardMiddleware()

@@ -7,13 +7,18 @@ over https with HTTP Basic credentials from env. The tool never emails anything.
 """
 import logging
 import re
-from urllib.parse import quote
+import hashlib
+import hmac
+import secrets
+import time
+import uuid
+from urllib.parse import quote, urlencode, urlsplit
 
 import httpx
 from fastmcp.exceptions import ToolError
 from pydantic import BaseModel, Field, field_validator
 
-from annotations import GENERATE_ANNOTATIONS
+from annotations import GENERATE_ANNOTATIONS, READONLY_ANNOTATIONS
 from config import settings
 from security import MSG_DENIED
 
@@ -62,6 +67,8 @@ class CreateReportParams(BaseModel):
             return None  # blank == omitted
         if not _SEGMENT_RE.fullmatch(v):
             raise ValueError("only letters, digits, '-' and '_' are allowed")
+        if info.field_name == "campus":
+            return v.lower()
         return v
 
     @field_validator("trimester")
@@ -77,31 +84,101 @@ class CreateReportParams(BaseModel):
         return v
 
 
-async def _agent_generate(campus, batch, student_id, refresh, trimester=None):
+class ReportJobParams(BaseModel):
+    request_id: str = Field(description="UUID returned by create_report while queued",
+                            min_length=36, max_length=36,
+                            pattern=r"^[0-9a-fA-F-]{36}$")
+
+
+def _signed_agent_headers(method: str, url: str, actor: str) -> dict[str, str]:
+    """Bind an internal request to its method, target, actor and a short time window."""
+    timestamp = str(int(time.time()))
+    nonce = secrets.token_urlsafe(18)
+    parsed = urlsplit(url)
+    target = parsed.path + (f"?{parsed.query}" if parsed.query else "")
+    canonical = "\n".join((method.upper(), target, actor, timestamp, nonce))
+    signature = hmac.new(
+        settings.agent_shared_secret.encode(), canonical.encode(), hashlib.sha256
+    ).hexdigest()
+    return {
+        "X-MCP-Requester-Subject": actor,
+        "X-MCP-Timestamp": timestamp,
+        "X-MCP-Nonce": nonce,
+        "X-MCP-Signature": f"v1={signature}",
+    }
+
+async def _agent_generate(campus, batch, student_id, refresh, trimester=None, principal=None):
     """POST the agent /generate for one student. Returns (status_code, json). Raises
     ToolError only on transport failure / 5xx (never on 404, which is a data-level miss).
     trimester is optional — omit it to let the agent auto-pick the latest trimester
     that has scored subjects for the student."""
-    url = (f"{settings.agent_api_base.rstrip('/')}/generate/"  # segments URL-encoded
+    endpoint = "report-jobs" if settings.agent_report_queue else "generate"
+    url = (f"{settings.agent_api_base.rstrip('/')}/{endpoint}/"  # segments URL-encoded
            f"{quote(campus, safe='')}/{quote(batch, safe='')}/{quote(student_id, safe='')}")
     params = {"refresh": str(refresh).lower()}
     if trimester is not None:
         params["trimester"] = str(trimester)
     try:
+        from audit_store import principal_subject
+        actor = principal_subject(principal)
+        idem = hashlib.sha256(
+            f"{actor}|{campus}|{batch}|{student_id}|{trimester}|{int(refresh)}".encode()
+        ).hexdigest()
+        if settings.agent_report_queue:
+            url = f"{url}?{urlencode(params)}"
+            headers = _signed_agent_headers("POST", url, actor)
+            auth = None
+        else:
+            headers = {"X-MCP-Requester-Subject": actor,
+                       "Idempotency-Key": idem}
+            auth = (settings.agent_admin_user, settings.agent_admin_pass)
+        headers["Idempotency-Key"] = idem
+        request_kwargs = {"auth": auth, "headers": headers}
+        if not settings.agent_report_queue:
+            request_kwargs["params"] = params
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-            r = await client.post(url, params=params,
-                                  auth=(settings.agent_admin_user, settings.agent_admin_pass))
+            r = await client.post(url, **request_kwargs)
     except httpx.HTTPError as e:
         log.warning("create_report: agent unreachable: %s", type(e).__name__)
         raise ToolError(MSG_AGENT_DOWN)
-    if r.status_code not in (200, 404):
+    if r.status_code not in (200, 202, 404):
         log.warning("create_report: agent returned %s", r.status_code)
         raise ToolError(MSG_AGENT_DOWN)
     try:
         body = r.json()
     except Exception:  # noqa: BLE001
         body = {}
+    if not isinstance(body, dict):
+        raise ToolError(MSG_AGENT_DOWN)
+    if r.status_code == 202:
+        try:
+            uuid.UUID(str(body.get("request_id")))
+        except (TypeError, ValueError):
+            raise ToolError(MSG_AGENT_DOWN)
     return r.status_code, body
+
+
+async def _agent_job(request_id: str, principal) -> dict:
+    from audit_store import principal_subject
+    actor = principal_subject(principal)
+    url = f"{settings.agent_api_base.rstrip('/')}/report-jobs/{quote(request_id, safe='')}"
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
+            response = await client.get(
+                url, headers=_signed_agent_headers("GET", url, actor))
+    except httpx.HTTPError:
+        raise ToolError(MSG_AGENT_DOWN)
+    if response.status_code == 404:
+        return {"found": False, "note": "Report job not found for this user."}
+    if response.status_code != 200:
+        raise ToolError(MSG_AGENT_DOWN)
+    try:
+        body = response.json()
+    except Exception as exc:  # noqa: BLE001
+        raise ToolError(MSG_AGENT_DOWN) from exc
+    if not isinstance(body, dict):
+        raise ToolError(MSG_AGENT_DOWN)
+    return body
 
 
 def _success(data, campus, batch, auto):
@@ -109,7 +186,47 @@ def _success(data, campus, batch, auto):
     if auto:  # tell the model we chose the student, so it can name who it generated for
         out["auto_selected"] = True
     out.update({k: data.get(k) for k in _PASS_FIELDS if k in data})
+    report_url = out.get("report_url")
+    if report_url and not _safe_report_url(report_url):
+        log.error("report service returned an invalid report URL; suppressing it")
+        out.pop("report_url", None)
+        out["link_status"] = "not_generated"
     return out
+
+
+def _queued(data, campus, batch, auto):
+    return {
+        "found": True,
+        "generated": False,
+        "queued": True,
+        "request_id": data.get("request_id"),
+        "status": data.get("status", "queued"),
+        "campus": campus,
+        "batch": batch,
+        "auto_selected": bool(auto),
+        "note": "Report generation is queued. Call get_report_job with request_id.",
+    }
+
+
+def _safe_report_url(value: object) -> bool:
+    """Only pass through exact capability-link routes on the configured report host."""
+    if not isinstance(value, str) or len(value) > 2048:
+        return False
+    try:
+        candidate = urlsplit(value)
+        expected = urlsplit(settings.report_public_base_url)
+    except ValueError:
+        return False
+    return (
+        candidate.scheme == "https"
+        and candidate.hostname == expected.hostname
+        and candidate.port == expected.port
+        and bool(re.fullmatch(r"/(?:r|rv|s)/[A-Za-z0-9_-]+={0,2}", candidate.path))
+        and not candidate.query
+        and not candidate.fragment
+        and not candidate.username
+        and not candidate.password
+    )
 
 
 async def _create_impl(svc, p: CreateReportParams) -> dict:
@@ -148,9 +265,12 @@ async def _create_impl(svc, p: CreateReportParams) -> dict:
             if svc.latest_run(campus, batch) is None:
                 return enrolled_no_data(loc)  # enrolled, but no graded run yet
             code, body = await _agent_generate(campus, batch, student_id, p.refresh,
-                                               trimester=p.trimester)
+                                               trimester=p.trimester,
+                                               principal=getattr(svc, "principal", None))
             if code == 200:
                 return _success(body, campus, batch, auto=False)
+            if code == 202:
+                return _queued(body, campus, batch, auto=False)
             return {"found": False,
                     "note": body.get("detail") or f"No report data for {student_id} in {campus}/{batch}."}
         # order scopes so ones PROVEN to generate (a batch with cached reports has a
@@ -170,9 +290,12 @@ async def _create_impl(svc, p: CreateReportParams) -> dict:
                     candidates.append((c, b, sid))
         last = None
         for c, b, sid in candidates[:8]:  # cap agent round-trips
-            code, body = await _agent_generate(c, b, sid, p.refresh, trimester=p.trimester)
+            code, body = await _agent_generate(c, b, sid, p.refresh, trimester=p.trimester,
+                                               principal=getattr(svc, "principal", None))
             if code == 200:
                 return _success(body, c, b, auto=True)
+            if code == 202:
+                return _queued(body, c, b, auto=True)
             last = body.get("detail") or last
         where = campus or "your campuses"
         return {"found": False,
@@ -192,10 +315,13 @@ async def _create_impl(svc, p: CreateReportParams) -> dict:
                 "note": (f"{student_id} is not enrolled in {campus}/{batch} — "
                          "check the enrolment id, campus and batch.")}
     code, body = await _agent_generate(campus, batch, student_id, p.refresh,
-                                       trimester=p.trimester)
+                                       trimester=p.trimester,
+                                       principal=getattr(svc, "principal", None))
     if code == 404:
         return {"found": False,
-                "note": body.get("detail") or f"No report data for {student_id} in {campus}/{batch}."}
+                           "note": body.get("detail") or f"No report data for {student_id} in {campus}/{batch}."}
+    if code == 202:
+        return _queued(body, campus, batch, auto=False)
     return _success(body, campus, batch, auto=False)
 
 
@@ -203,10 +329,10 @@ def register(mcp, get_service):
     @mcp.tool(title="Create Student Report", annotations=GENERATE_ANNOTATIONS)
     async def create_report(params: CreateReportParams) -> dict:
         """
-        WHAT: Generate (or refresh) one student's report on demand and return it COMPLETE,
-        right here: the validated narrative (headline, personal pattern, attendance line, the
-        four moves) plus the per-subject numbers table — AND a shareable expiring link to the
-        interactive page (unguessable URL, safe to send to the student/mentor).
+        WHAT: Queue generation (or refresh) of one student's report. The initial response
+        returns a request_id; call get_report_job with that id until it is completed, then the
+        completed response contains the validated narrative, per-subject numbers, and a
+        shareable expiring link to the interactive page.
         ALL PARAMETERS ARE OPTIONAL. Omit student_id to have a random student WITH graded data
         picked for you; omit batch for the campus's latest graded batch; omit campus for any
         campus in your grant that has data. So 'a report for any student in noida' -> pass
@@ -221,9 +347,26 @@ def register(mcp, get_service):
         student [in <campus>]', 'make a fresh report', 'get me a link I can share'.
         DO NOT USE WHEN they only want raw data (use get_student / student_marks) or the
         cached narrative without generating (use get_student_report). Never emails anyone.
-        RETURNS: campus, batch, name, narrative{headline, subtitle, pattern_title, pattern_text,
-        attendance_line, tracks[]}, subject_table[], attendance/CE %, report_url.
-        found:false with a note if there is no graded data to build from. ~15s when not cached.
-        PRESENT the narrative and subject table to the user in full — that IS the report.
+        RETURNS: queued:true + request_id for the durable job. get_report_job returns status and,
+        once completed, campus, batch, name, narrative, subject_table, attendance/CE %, and the
+        exact report_url. found:false with a note if there is no graded data to build from.
         """
         return await _create_impl(await get_service(), params)
+
+    @mcp.tool(title="Get Report Job", annotations=READONLY_ANNOTATIONS)
+    async def get_report_job(params: ReportJobParams) -> dict:
+        """Check a queued create_report request. Returns status and, once complete,
+        the full report plus its exact shareable capability URL."""
+        svc = await get_service()
+        job = await _agent_job(params.request_id, svc.principal)
+        if not job.get("found", True):
+            return job
+        if job.get("status") != "completed":
+            return {"found": True, "request_id": params.request_id,
+                    "status": job.get("status"), "error_code": job.get("error_code")}
+        result = job.get("result") or {}
+        campus, batch = job.get("campus"), job.get("batch")
+        if not campus or svc.campus_scope(campus) == []:
+            raise PermissionError(MSG_DENIED)
+        return {**_success(result, campus, batch, auto=False),
+                "request_id": params.request_id, "status": "completed"}

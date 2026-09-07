@@ -27,7 +27,7 @@ def _client() -> Client:
     (DB key used for both) so a service_role deployment is unchanged."""
     global _client_singleton
     if _client_singleton is None:
-        db_key = settings.supabase_service_role_key
+        db_key = settings.data_key()
         anon = settings.supabase_anon_key
         if anon:
             c = create_client(settings.supabase_url, anon)
@@ -48,12 +48,17 @@ class MoodleService:
     def __init__(self, client: Client, principal: dict):
         self.client = client
         self.principal = principal
-        self.allowed_campuses = principal.get("campuses")  # None == all campuses
+        campuses = principal.get("campuses")
+        self.allowed_campuses = (
+            None if campuses is None else
+            [str(campus).strip().lower() for campus in campuses]
+        )
 
     # --- campus scoping ---------------------------------------------------
     def campus_scope(self, requested: str | None):
         """Return the campus list to filter on (None == all), intersecting the request with the
         token's grant. Returns [] when the requested campus is outside the grant (empty results)."""
+        requested = requested.strip().lower() if isinstance(requested, str) else requested
         if self.allowed_campuses is None:
             return [requested] if requested else None
         allowed = list(self.allowed_campuses)

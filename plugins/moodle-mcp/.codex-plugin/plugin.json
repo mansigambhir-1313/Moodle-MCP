@@ -1,6 +1,6 @@
 {
   "name": "moodle-mcp",
-  "version": "1.0.0",
+  "version": "1.0.0+codex.20260907100944",
   "description": "Campus-scoped Moodle performance data and report generation for Jaipuria faculty.",
   "author": {
     "name": "Jaipuria AI Labs",
@@ -19,7 +19,7 @@
   "interface": {
     "displayName": "Moodle Faculty Analytics",
     "shortDescription": "Secure Moodle analytics for Jaipuria faculty",
-    "longDescription": "Query campus-scoped student marks, attendance, cohort analytics, risk signals, report accuracy, and on-demand student reports through the deployed Moodle MCP server.",
+    "longDescription": "Query campus-scoped student marks, attendance, cohort analytics, risk signals, report accuracy, and durable on-demand student reports through the deployed Moodle MCP server.",
     "developerName": "Jaipuria AI Labs",
     "category": "Education",
     "capabilities": [
@@ -31,7 +31,8 @@
     "defaultPrompt": [
       "Show the cohort pulse for my campus.",
       "Find students whose performance is declining.",
-      "Build an intervention watchlist for my cohort."
+      "Build an intervention watchlist for my cohort.",
+      "Create a report for any student in Noida."
     ],
     "brandColor": "#8B5CF6"
   }

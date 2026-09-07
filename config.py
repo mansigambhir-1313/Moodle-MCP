@@ -2,6 +2,7 @@
 import json
 import logging
 import os
+from urllib.parse import urlsplit
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -15,8 +16,14 @@ class Settings(BaseSettings):
     # Supabase (read-only service role — server-side only, never exposed to the host)
     supabase_url: str = Field(default="", alias="SUPABASE_URL")
     supabase_service_role_key: str = Field(default="", alias="SUPABASE_SERVICE_ROLE_KEY")
+    # New deployments use separate credentials for each trust boundary.  The legacy
+    # SUPABASE_SERVICE_ROLE_KEY remains a temporary data-reader fallback so an
+    # existing deployment can roll forward without an outage.
+    supabase_data_key: str = Field(default="", alias="SUPABASE_DATA_KEY")
+    supabase_oauth_storage_key: str = Field(default="", alias="SUPABASE_OAUTH_STORAGE_KEY")
+    supabase_audit_key: str = Field(default="", alias="SUPABASE_AUDIT_KEY")
     # Anon/publishable key. When set, it is used as the API-gateway `apikey` while
-    # SUPABASE_SERVICE_ROLE_KEY is attached as the bearer — so the DB key can be a
+    # SUPABASE_DATA_KEY is attached as the bearer — so the DB key can be a
     # least-privilege custom-role JWT (e.g. reporting_readonly) that the gateway
     # would otherwise reject as an apikey. Leave empty to use the DB key for both.
     supabase_anon_key: str = Field(default="", alias="SUPABASE_ANON_KEY")
@@ -45,14 +52,21 @@ class Settings(BaseSettings):
     mcp_faculty_raw: str = Field(default="", alias="MCP_FACULTY")
     # Optional stable key so issued OAuth tokens survive a restart/redeploy.
     oauth_jwt_signing_key: str = Field(default="", alias="OAUTH_JWT_SIGNING_KEY")
+    oauth_storage_encryption_key: str = Field(
+        default="", alias="OAUTH_STORAGE_ENCRYPTION_KEY")
+    oauth_redirect_hosts_raw: str = Field(default="", alias="OAUTH_REDIRECT_HOSTS")
+    oauth_allow_cross_client_pkce: bool = Field(
+        default=False, alias="OAUTH_ALLOW_CROSS_CLIENT_PKCE")
 
     # Report generation (create_report tool): the moodle-agent report service.
-    # When all three are set, create_report can trigger on-demand generation there
-    # (server-to-server HTTP Basic). Unset -> the tool reports itself unavailable.
+    # Production queues use a dedicated HMAC key. Legacy synchronous rollback uses
+    # Basic credentials. Unset -> the tool reports itself unavailable.
     # The DB credential here stays SELECT-only; all writes happen in the agent.
     agent_api_base: str = Field(default="", alias="AGENT_API_BASE")
     agent_admin_user: str = Field(default="", alias="AGENT_ADMIN_USER")
     agent_admin_pass: str = Field(default="", alias="AGENT_ADMIN_PASS")
+    agent_shared_secret: str = Field(default="", alias="AGENT_SHARED_SECRET")
+    agent_report_queue: bool = Field(default=True, alias="AGENT_REPORT_QUEUE")
 
     # Identity / reports
     server_name: str = Field(default="jaipuria-moodle-mcp", alias="MCP_SERVER_NAME")
@@ -73,6 +87,12 @@ class Settings(BaseSettings):
     # so a lower cap throttles legitimate use. Still a real flood brake (20 rps),
     # and the per-principal limit above bounds each individual account.
     ip_rate_limit: int = Field(default=1200, alias="MCP_IP_RATE_LIMIT")
+    rate_limit_max_keys: int = Field(default=16384, alias="MCP_RATE_LIMIT_MAX_KEYS")
+    redis_url: str = Field(default="", alias="MCP_REDIS_URL")
+    trust_proxy_headers: bool = Field(default=False, alias="MCP_TRUST_PROXY_HEADERS")
+    allowed_hosts_raw: str = Field(default="", alias="MCP_ALLOWED_HOSTS")
+    audit_hmac_key: str = Field(default="", alias="MCP_AUDIT_HMAC_KEY")
+    require_audit: bool = Field(default=False, alias="MCP_REQUIRE_AUDIT")
     # Reject access tokens shorter than this at boot (set ALLOW_WEAK_TOKENS to skip).
     allow_weak_tokens: bool = Field(default=False, alias="ALLOW_WEAK_TOKENS")
 
@@ -92,7 +112,32 @@ class Settings(BaseSettings):
         return bool(self.google_oauth_client_id and self.google_oauth_client_secret)
 
     def report_generation_enabled(self) -> bool:
-        return bool(self.agent_api_base and self.agent_admin_user and self.agent_admin_pass)
+        if not self.agent_api_base:
+            return False
+        if self.agent_report_queue:
+            return bool(self.agent_shared_secret)
+        return bool(self.agent_admin_user and self.agent_admin_pass)
+
+    def data_key(self) -> str:
+        return self.supabase_data_key or self.supabase_service_role_key
+
+    def oauth_storage_key(self) -> str:
+        return self.supabase_oauth_storage_key
+
+    def audit_enabled(self) -> bool:
+        return bool(self.supabase_audit_key)
+
+    def oauth_redirect_hosts(self) -> list[str]:
+        return [host.strip().lower() for host in self.oauth_redirect_hosts_raw.split(",")
+                if host.strip()]
+
+    def allowed_hosts(self) -> list[str]:
+        configured = [host.strip().lower() for host in self.allowed_hosts_raw.split(",")
+                      if host.strip()]
+        if configured:
+            return configured
+        host = urlsplit(self.server_base_url).hostname
+        return [host.lower()] if host else []
 
     def oauth_allowed_domains(self) -> list:
         """Lower-cased email domains allowed to sign in (empty = deny everyone)."""
@@ -168,7 +213,7 @@ def validate_config() -> None:
     Malformed MCP_TOKENS raises at boot (visible) rather than silently locking everyone out."""
     missing = [k for k, v in {
         "SUPABASE_URL": settings.supabase_url,
-        "SUPABASE_SERVICE_ROLE_KEY": settings.supabase_service_role_key,
+        "SUPABASE_DATA_KEY or SUPABASE_SERVICE_ROLE_KEY": settings.data_key(),
     }.items() if not v]
     if missing:
         raise RuntimeError(f"missing required config: {', '.join(missing)}")
@@ -203,7 +248,7 @@ def validate_config() -> None:
 
     # Least-privilege DB credential: warn when the RLS-bypassing service_role key
     # is configured. Prefer a scoped, SELECT-only role.
-    role = key_role(settings.supabase_service_role_key)
+    role = key_role(settings.data_key())
     if role == "service_role":
         log.warning("SUPABASE_SERVICE_ROLE_KEY is a full service_role key (bypasses RLS and can "
                     "write). Prefer a SELECT-only 'reporting_readonly' JWT — see "
@@ -262,13 +307,34 @@ def validate_config() -> None:
         if not settings.oauth_jwt_signing_key:
             log.warning("OAUTH_JWT_SIGNING_KEY not set — issued OAuth tokens are "
                         "invalidated on every restart/redeploy (users must re-login)")
+        if settings.supabase_oauth_storage_key and not settings.oauth_storage_encryption_key:
+            raise RuntimeError("SUPABASE_OAUTH_STORAGE_KEY requires an independent "
+                               "OAUTH_STORAGE_ENCRYPTION_KEY")
+        if settings.oauth_allow_cross_client_pkce and not settings.oauth_redirect_hosts():
+            raise RuntimeError("OAUTH_ALLOW_CROSS_CLIENT_PKCE requires OAUTH_REDIRECT_HOSTS "
+                               "so the compatibility exception is bounded")
+
+    if settings.audit_enabled() and not settings.audit_hmac_key:
+        raise RuntimeError("SUPABASE_AUDIT_KEY requires MCP_AUDIT_HMAC_KEY so identities "
+                           "and network attributes are pseudonymised before storage")
+    if settings.require_audit and not settings.audit_enabled():
+        raise RuntimeError("MCP_REQUIRE_AUDIT is enabled but SUPABASE_AUDIT_KEY is missing")
 
     # create_report backend: fail-closed on a half-configured setup, and require https
     # so the Basic credentials never travel in the clear.
-    agent_bits = (settings.agent_api_base, settings.agent_admin_user, settings.agent_admin_pass)
-    if any(agent_bits) and not all(agent_bits):
-        raise RuntimeError("report generation is half-configured: set ALL of AGENT_API_BASE, "
-                           "AGENT_ADMIN_USER, AGENT_ADMIN_PASS (or none)")
+    agent_bits = (settings.agent_api_base, settings.agent_admin_user,
+                  settings.agent_admin_pass, settings.agent_shared_secret)
+    if any(agent_bits) and not settings.agent_api_base:
+        raise RuntimeError("report generation is half-configured: AGENT_API_BASE is required")
+    if settings.agent_api_base and settings.agent_report_queue:
+        if not settings.agent_shared_secret:
+            raise RuntimeError("AGENT_SHARED_SECRET is required when AGENT_REPORT_QUEUE=true")
+        if len(settings.agent_shared_secret) < 32:
+            raise RuntimeError("AGENT_SHARED_SECRET must be at least 32 characters")
+    if settings.agent_api_base and not settings.agent_report_queue \
+            and not (settings.agent_admin_user and settings.agent_admin_pass):
+        raise RuntimeError("legacy synchronous report generation requires both "
+                           "AGENT_ADMIN_USER and AGENT_ADMIN_PASS")
     if settings.agent_api_base and not settings.agent_api_base.startswith("https://"):
         raise RuntimeError("AGENT_API_BASE must be an https URL")
 

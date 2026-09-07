@@ -6,13 +6,17 @@ services:
   - type: web
     name: jaipuria-moodle-mcp
     runtime: docker            # live service builds ./Dockerfile (python:3.12-slim)
-    plan: free                 # current prod; upgrade to starter to remove cold starts
+    plan: standard             # production: no cold starts; supports horizontal scaling
     dockerfilePath: ./Dockerfile
     healthCheckPath: /health   # was unset on the live service — enables zero-downtime deploys
     envVars:
       - key: SUPABASE_URL
         sync: false
-      - key: SUPABASE_SERVICE_ROLE_KEY   # prefer the SELECT-only reporting_readonly JWT
+      - key: SUPABASE_DATA_KEY           # SELECT-only reporting_readonly JWT
+        sync: false
+      - key: SUPABASE_OAUTH_STORAGE_KEY  # CRUD only on mcp_oauth_kv
+        sync: false
+      - key: SUPABASE_AUDIT_KEY          # execute only record_mcp_tool_call
         sync: false
       - key: SUPABASE_ANON_KEY           # required when the DB key is a custom-role JWT
         sync: false
@@ -22,6 +26,12 @@ services:
         sync: false
       - key: OAUTH_JWT_SIGNING_KEY
         sync: false
+      - key: OAUTH_STORAGE_ENCRYPTION_KEY
+        sync: false
+      - key: OAUTH_REDIRECT_HOSTS
+        sync: false
+      - key: OAUTH_ALLOW_CROSS_CLIENT_PKCE
+        value: "false"
       - key: MCP_SERVER_BASE_URL
         sync: false
       - key: OAUTH_ALLOWED_DOMAINS
@@ -30,6 +40,18 @@ services:
       # limit needs headroom; per-principal limits (90/min) still bound each user.
       - key: MCP_IP_RATE_LIMIT
         value: "1200"
+      - key: MCP_RATE_LIMIT_MAX_KEYS
+        value: "16384"
+      - key: MCP_REDIS_URL
+        sync: false
+      - key: MCP_TRUST_PROXY_HEADERS
+        value: "false"
+      - key: MCP_ALLOWED_HOSTS
+        value: moodle-mcp.tryrehearsal.ai
+      - key: MCP_AUDIT_HMAC_KEY
+        sync: false
+      - key: MCP_REQUIRE_AUDIT
+        value: "true"
       # Fail-closed default: only emails listed in MCP_FACULTY get access. The code
       # code default is also "none"; keep this explicit so the deployed policy is visible.
       - key: OAUTH_DEFAULT_CAMPUSES
@@ -39,10 +61,11 @@ services:
       # On-demand report generation (create_report tool); leave unset to disable.
       - key: AGENT_API_BASE
         sync: false
-      - key: AGENT_ADMIN_USER
+      # Dedicated HMAC credential restricted to /report-jobs; never reuse ADMIN_PASS.
+      - key: AGENT_SHARED_SECRET
         sync: false
-      - key: AGENT_ADMIN_PASS
-        sync: false
+      - key: AGENT_REPORT_QUEUE
+        value: "true"
       - key: REPORT_PUBLIC_BASE_URL
         value: https://reports.tryrehearsal.ai
       # MCP_TOKENS / MCP_ADMIN_TOKEN are intentionally absent: in OAuth mode FastMCP

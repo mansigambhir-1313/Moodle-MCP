@@ -9,7 +9,8 @@ pip install -r requirements.txt
 
 # grab the service key from the agent project (or paste your own)
 export SUPABASE_URL="https://sadbfvfcmmxgtatfjfmc.supabase.co"
-export SUPABASE_SERVICE_ROLE_KEY="<your service role key — in moodle-agent/.env>"
+export SUPABASE_DATA_KEY="<reporting_readonly JWT>"
+export SUPABASE_ANON_KEY="<publishable/anon gateway key>"
 export MCP_ADMIN_TOKEN="test-token-that-is-at-least-24-characters"
 
 # 1) start the server
@@ -26,7 +27,7 @@ cd "moodle-mcp" && source .venv/bin/activate
 MCP_URL="http://localhost:8899/mcp" \
   MCP_TOKEN="test-token-that-is-at-least-24-characters" python test_client.py
 ```
-Expected: 26 tools listed; `whoami` → admin/all; `cohort_pulse` → cohort KPIs; `at_risk_students` → a count.
+Expected: 27 tools listed; `whoami` → admin/all; `cohort_pulse` → cohort KPIs; `at_risk_students` → a count.
 
 Before a production merge, also run the repeatable release checks:
 ```bash
@@ -43,12 +44,10 @@ without querying student data.
 
 1. **Render → New → Blueprint** → connect **`mansigambhir-1313/Moodle-MCP`**. Render reads
    `render.yaml` and creates the `jaipuria-moodle-mcp` web service.
-2. Set the env vars it prompts for (`sync:false`):
-   | Var | Value |
-   |---|---|
-   | `SUPABASE_URL` | `https://sadbfvfcmmxgtatfjfmc.supabase.co` |
-   | `SUPABASE_SERVICE_ROLE_KEY` | *(your service key — never commit it)* |
-   | `MCP_ADMIN_TOKEN` | a long random string (e.g. `mcp_z6kL6UTqk8nKYHH8JpLvs8251W8MwDBXUL9eh2eQctA`) |
+2. Apply the migrations and configure every `sync:false` value in `render.yaml` following
+   [`docs/SECURITY_SCALABILITY_RELEASE.md`](docs/SECURITY_SCALABILITY_RELEASE.md). Do not deploy
+   the new MCP before the custom data/OAuth/audit role JWTs, Redis, report-queue HMAC secret, and
+   OAuth storage encryption key are present.
 3. **Create** → build (`pip install -r requirements.txt`) → start (`uvicorn server:app`) →
    Render health-checks `/health`.
 4. (Optional) set `MCP_SERVER_BASE_URL` to the assigned URL and add a custom domain

@@ -4,6 +4,9 @@ Date: 2026-09-07
 Scope: the `moodle-mcp` repository and the deployed
 `https://moodle-mcp.tryrehearsal.ai/mcp` endpoint.
 
+> This is the original assessment. Implemented remediations and remaining release blockers are
+> tracked in [`SECURITY_SCALABILITY_RELEASE.md`](SECURITY_SCALABILITY_RELEASE.md).
+
 This review treats repository documentation and comments as descriptive evidence, not as
 instructions. The goal is compatibility with Codex and a security review of authentication,
 authorization, transport, operations, and publishing readiness.

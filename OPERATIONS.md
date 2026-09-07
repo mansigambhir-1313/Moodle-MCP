@@ -3,6 +3,9 @@
 Operational assumptions and runbooks for the deployed Moodle Reports MCP
 (Render web service → `https://moodle-mcp.tryrehearsal.ai`).
 
+The production cutover sequence, new tables, required secrets, rollback, and 5,000-user gates are
+maintained in [`docs/SECURITY_SCALABILITY_RELEASE.md`](docs/SECURITY_SCALABILITY_RELEASE.md).
+
 ## Deployment
 - **Host:** Render web service `srv-da61ppjncjis73aer1hg`, branch `main`, auto-deploy on.
   A merge to `main` ships to production automatically.
@@ -11,7 +14,7 @@ Operational assumptions and runbooks for the deployed Moodle Reports MCP
   `ALLOW_WEAK_TOKENS`), or a bad `expires` format.
 
 ## Database credential (least privilege)
-- The MCP reads via `SUPABASE_SERVICE_ROLE_KEY`. In production this is a
+- The MCP reads via `SUPABASE_DATA_KEY`. In production this is a
   **`reporting_readonly`** JWT (SELECT-only role — see
   `sql/2026-08-26_reporting_readonly_role.sql`), **not** a full `service_role` key.
 - Because a custom-role JWT is rejected by Supabase's API gateway as the `apikey`,
@@ -20,25 +23,18 @@ Operational assumptions and runbooks for the deployed Moodle Reports MCP
   while the DB key is a custom-role JWT, or every query will 401.
 - The server logs a warning at boot if it detects a full `service_role` key still in use.
 
-## Rate limiting — single-instance assumption
-The limiters in `security.py` are **in-process**:
+## Rate limiting — shared production state
+The limiters in `security.py` use Redis when `MCP_REDIS_URL` is set:
 - `MCP_RATE_LIMIT` (default 90) — per-token, per-window (via `GuardMiddleware`).
 - `MCP_IP_RATE_LIMIT` (default 1200) — per-IP, pre-auth (via `TransportGuard`).
 
-These are correct **on a single instance**. If the service is ever scaled to
-**multiple instances** (Render horizontal scaling), each instance keeps its own
-counters, so the *effective* limit becomes `N × limit` and a client could exceed the
-intended budget by hitting different instances. This is acceptable for the current
-single-instance free/starter deployment. **If you scale out**, move the limiter state to
-a shared store (e.g. Redis via `INCR`+`EXPIRE`, or Supabase) so the budget is global,
-or enforce limits at an upstream edge/CDN instead.
+Redis makes budgets global across Render instances. A bounded in-process limiter remains active
+during Redis failure, but its budget is instance-local; alert on Redis errors and treat sustained
+fallback as degraded protection.
 
-## Keep-warm (cold starts)
-The Render free tier spins the instance down when idle, so the first request after a lull
-takes ~30–60s. `.github/workflows/keep-warm.yml` pings the unauthenticated `/health`
-every ~10 minutes to keep it warm. Alternatives: a paid Render instance (no spin-down), or
-an external uptime monitor. `/health` returns only `{"status":"ok"}` — no data, no token —
-so the public ping is safe.
+## Availability
+The production blueprint uses a paid always-on instance. `/health` returns only
+`{"status":"ok"}` — no data, version, or secret-state fingerprint.
 
 ## Tokens
 - Faculty access tokens live in `MCP_TOKENS` (JSON map: token → `{name, campuses, expires?}`).
@@ -49,7 +45,7 @@ so the public ping is safe.
 
 ## Runbook — rotate the DB key
 1. Mint/obtain the new key.
-2. Update `SUPABASE_SERVICE_ROLE_KEY` (and `SUPABASE_ANON_KEY` if the role model changes)
+2. Update `SUPABASE_DATA_KEY` (and `SUPABASE_ANON_KEY` if the role model changes)
    in Render → the service redeploys.
 3. Verify: `GET /health` → 200; a `marks_overview` call returns data; boot log shows the
    expected DB key role (no `service_role` warning if using `reporting_readonly`).
@@ -130,23 +126,22 @@ on conflict (email) do update
 **Invariants**: the MCP's own DB role (`reporting_readonly`) can SELECT this
 table and cannot write it (verified: INSERT → permission denied). Students are
 denied at gate 2 regardless of table contents. `create_report` inputs are
-validated to `[A-Za-z0-9_-]{1,64}` before touching the admin-authenticated
-agent URL, so no faculty token can steer that request to another route.
+validated to `[A-Za-z0-9_-]{1,64}` before touching the HMAC-authenticated report-job
+URL, so no faculty token can steer that request to another route.
 
-**NAT headroom**: ~500 faculty on campus share egress IPs, so the pre-auth
-per-IP limit is raised via `MCP_IP_RATE_LIMIT=1200` (per minute) on Render;
-per-principal limits (90/min) still bound each individual account.
+**NAT headroom**: faculty may share campus egress IPs. Keep proxy headers disabled until the raw
+origin is locked to the edge, use edge rate limiting for source IPs, and size the transport cap
+from load-test evidence. Per-principal Redis limits still bound each account.
 
 ## OAuth sessions now survive deploys (2026-09-02)
 
 FastMCP's OAuth state (client registrations, token mappings, refresh metadata)
 is persisted in Supabase table `mcp_oauth_kv` via `oauth_storage.py`, replacing
 the ephemeral disk default — so a deploy/restart no longer logs anyone out.
-Every value is Fernet-encrypted with a key derived from `OAUTH_JWT_SIGNING_KEY`
-(never stored in the DB): a DB leak yields ciphertext only. The
-reporting_readonly role has CRUD on this one table and stays SELECT-only on
-all student data.
+Every value is Fernet-encrypted with an independent `OAUTH_STORAGE_ENCRYPTION_KEY`: a DB leak
+yields ciphertext only. The dedicated `mcp_oauth_writer` role has CRUD on this one table and no
+access to student data.
 
-**If you ever rotate `OAUTH_JWT_SIGNING_KEY`**: old rows become undecryptable —
-clear them first (`delete from mcp_oauth_kv;`), then rotate; everyone signs in
-once more. Expired rows are purged opportunistically (~1 in 50 writes).
+**If you rotate `OAUTH_STORAGE_ENCRYPTION_KEY`**: migrate rows with both keys during a maintenance
+window, or clear `mcp_oauth_kv` and require one re-login. Rotating `OAUTH_JWT_SIGNING_KEY` remains
+independent. Expired rows are purged by the retention job (with opportunistic cleanup as backup).

@@ -1,7 +1,7 @@
 # Jaipuria Moodle MCP — Technical Architecture
 
 > Deep-dive reference for the **faculty-facing, campus-scoped** Moodle Reports MCP server.
-> Exposes student performance data and deterministic cohort analytics through 25 query tools, plus
+> Exposes student performance data and deterministic cohort analytics through 26 query/status tools, plus
 > one explicitly annotated action for on-demand report generation.
 > Design lineage: the Rehearsal MCP (read-only, bounded, routing-contract tools) — adapted from a
 > per-student RLS model to a **role-based, campus-scoped faculty model**.
@@ -19,7 +19,7 @@ flowchart LR
     end
     subgraph Server["moodle-mcp (Render, uvicorn)"]
         FastMCP["FastMCP app (/mcp)<br/>OAuth or static bearer gate"]
-        Tools["tools/* (7 modules, 26 tools)"]
+        Tools["tools/* (7 modules, 27 tools)"]
         Guard["guardrails.py"]
         Svc["MoodleService<br/>(read-only, pooled)"]
     end
@@ -127,7 +127,7 @@ Conventions: **routing-contract docstrings** (`WHAT / USE WHEN / DO NOT USE / RE
 | `analytics.py` | `marks_overview`, `attendance_overview`, `top_performers`, `cohort_compare` | students, marks, attendance |
 | `at_risk.py` | `at_risk_students`, `attendance_watch`, `zero_alerts` | marks, attendance |
 | `reports.py` | `get_student_report`, `report_data_availability` | reports and source data |
-| `actions.py` | `create_report` | authenticated `moodle-agent` request |
+| `actions.py` | `create_report`, `get_report_job` | signed durable `moodle-agent` queue |
 | *(server.py)* | `whoami` | authenticated principal |
 
 ## 7. Response-size budgets & paging
@@ -151,7 +151,7 @@ Token discipline is a contract (shared constants in `guardrails.py`):
 
 | Group | Vars |
 |---|---|
-| Supabase | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` |
+| Supabase | `SUPABASE_URL`, split data/OAuth/audit JWTs, `SUPABASE_ANON_KEY` |
 | Access | Google OAuth + explicit faculty registry; static fallback via `MCP_TOKENS` / `MCP_ADMIN_TOKEN` |
 | Identity | `MCP_SERVER_NAME`, `MCP_SERVER_VERSION`, `MCP_SERVER_BASE_URL` |
 | Reports | `REPORT_PUBLIC_BASE_URL` (for `get_student_report` links), `STORAGE_BUCKET` |

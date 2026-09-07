@@ -1,5 +1,5 @@
 """Report retrieval — find students, open one full report, check data availability. Read-only."""
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from annotations import READONLY_ANNOTATIONS
 from config import settings
@@ -16,6 +16,11 @@ class SearchParams(BaseModel):
     trimester: str | None = Field(default=None, description="trimester number e.g. '5'", max_length=8)
     limit: int = Field(default=20, description="max cards, 1-50", ge=1, le=50)
 
+    @field_validator("campus")
+    @classmethod
+    def _campus_lower(cls, value):
+        return value.strip().lower() if isinstance(value, str) and value.strip() else None
+
 
 class ReportParams(BaseModel):
     student_id: str = Field(description="enrolment id, e.g. 'JJ24PG099'", max_length=64)
@@ -23,10 +28,20 @@ class ReportParams(BaseModel):
     batch: str | None = Field(default=None, max_length=64)
     trimester: str | None = Field(default=None, max_length=8)
 
+    @field_validator("campus")
+    @classmethod
+    def _campus_lower(cls, value):
+        return value.strip().lower() if isinstance(value, str) and value.strip() else None
+
 
 class AvailabilityParams(BaseModel):
     campus: str | None = Field(default=None, description="one campus (within your grant); omit for all", max_length=64)
     batch: str | None = Field(default=None, description="batch e.g. '2024-26'; omit for all", max_length=64)
+
+    @field_validator("campus")
+    @classmethod
+    def _campus_lower(cls, value):
+        return value.strip().lower() if isinstance(value, str) and value.strip() else None
 
 
 def _search_impl(svc, p: SearchParams) -> dict:
@@ -76,7 +91,8 @@ def _report_impl(svc, p: ReportParams) -> dict:
                       "class_average": s.get("class_marks_average"),
                       "delta": s.get("score_delta"), "attendance": s.get("student_attendance")}
                      for s in subjects],
-        "report_link_base": settings.report_public_base_url,
+        "link_status": "not_generated",
+        "link_note": "Use create_report when a new shareable link is required.",
     }
 
 
