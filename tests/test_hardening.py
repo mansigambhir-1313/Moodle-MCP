@@ -117,11 +117,19 @@ def phase3_transport_guard():
         await send({"type": "http.response.start", "status": 200, "headers": []})
         await send({"type": "http.response.body", "body": b""})
 
-    async def drive(guard, scope):
+    async def drive(guard, scope, chunks=None):
         sent = []
+        chunks = list(chunks or [b""])
+        cursor = 0
 
         async def receive():
-            return {"type": "http.request", "body": b"", "more_body": False}
+            nonlocal cursor
+            if cursor >= len(chunks):
+                return {"type": "http.disconnect"}
+            body = chunks[cursor]
+            cursor += 1
+            return {"type": "http.request", "body": body,
+                    "more_body": cursor < len(chunks)}
 
         async def send(m):
             sent.append(m)
@@ -139,6 +147,15 @@ def phase3_transport_guard():
     st = asyncio.run(drive(g, mcp_scope(headers=[(b"content-length", b"999999")])))
     check("oversized body -> 413", st == 413)
     check("oversized body never reaches the app", not app_calls)
+
+    # A chunked request has no Content-Length. The received-byte cap must still
+    # reject it before OAuth/MCP body parsers can buffer an unbounded payload.
+    app_calls.clear()
+    g_chunked = TransportGuard(app, max_body=1024, ip_rate_limit=240,
+                               check_bearer=False)
+    st = asyncio.run(drive(g_chunked, mcp_scope(), chunks=[b"a" * 600, b"b" * 600]))
+    check("oversized chunked body -> 413", st == 413)
+    check("oversized chunked body never reaches the app", not app_calls)
 
     # 2. per-IP limit -> first request passes IP (401 no-token), second 429
     g2 = TransportGuard(app, max_body=262144, ip_rate_limit=1)
@@ -236,6 +253,7 @@ def phase5_oauth_signin():
                 GOOGLE_OAUTH_CLIENT_ID="id.apps.googleusercontent.com",
                 GOOGLE_OAUTH_CLIENT_SECRET="GOCSPX-x",
                 MCP_SERVER_BASE_URL="https://mcp.example.com",
+                OAUTH_DEFAULT_CAMPUSES="none",
                 OAUTH_JWT_SIGNING_KEY="k" * 32)
     import security
     importlib.reload(security)
@@ -251,27 +269,48 @@ def phase5_oauth_signin():
     _reg._grants = _reg.TTLCache(maxsize=8, ttl=0.0)
     _reg._students = _reg.TTLCache(maxsize=8, ttl=0.0)
 
-    p = principal_from_claims({"email": "Prof@Jaipuria.ac.in", "name": "Prof"})
+    p = principal_from_claims({"email": "Prof@Jaipuria.ac.in", "email_verified": True,
+                               "name": "Prof"})
+    check("unlisted domain user denied by the secure default", p is None)
+
+    reload_with(OAUTH_DEFAULT_CAMPUSES="all")
+    p = principal_from_claims({"email": "Prof@Jaipuria.ac.in", "email_verified": True,
+                               "name": "Prof"})
     check("jaipuria.ac.in email accepted (case-insensitive)",
           p is not None and p["email"] == "prof@jaipuria.ac.in")
-    check("default grant is all campuses", p is not None and p["campuses"] is None)
-    check("outside domain rejected", principal_from_claims({"email": "x@gmail.com"}) is None)
-    check("missing email rejected", principal_from_claims({"name": "X"}) is None)
+    check("explicit all-campus default applies", p is not None and p["campuses"] is None)
+    check("outside domain rejected",
+          principal_from_claims({"email": "x@gmail.com", "email_verified": True}) is None)
+    check("missing email rejected",
+          principal_from_claims({"name": "X", "email_verified": True}) is None)
+    check("missing verification claim rejected",
+          principal_from_claims({"email": "p@jaipuria.ac.in"}) is None)
     check("unverified email rejected (userinfo v2 spelling)",
           principal_from_claims({"email": "p@jaipuria.ac.in",
                                  "google_user_data": {"verified_email": False}}) is None)
 
     reload_with(MCP_FACULTY='{"dean@jaipuria.ac.in": {"name": "Dean", "campuses": ["jaipur"]}}',
                 OAUTH_DEFAULT_CAMPUSES="none")
-    p = principal_from_claims({"email": "dean@jaipuria.ac.in"})
+    p = principal_from_claims({"email": "dean@jaipuria.ac.in", "email_verified": True})
     check("MCP_FACULTY override narrows campuses",
           p is not None and p["campuses"] == ["jaipur"])
     check("unlisted email denied when OAUTH_DEFAULT_CAMPUSES=none",
-          principal_from_claims({"email": "other@jaipuria.ac.in"}) is None)
+          principal_from_claims({"email": "other@jaipuria.ac.in",
+                                 "email_verified": True}) is None)
 
     reload_with(OAUTH_DEFAULT_CAMPUSES='["noida"]', MCP_FACULTY="")
-    p = principal_from_claims({"email": "other@jaipuria.ac.in"})
+    p = principal_from_claims({"email": "other@jaipuria.ac.in", "email_verified": True})
     check("JSON-list default grant applies", p is not None and p["campuses"] == ["noida"])
+
+    reload_with(MCP_FACULTY='{"dean@jaipuria.ac.in": {"name": "Dean"}}')
+    check("MCP_FACULTY entry without campuses rejected at boot",
+          raises(cfgmod.validate_config))
+    reload_with(MCP_FACULTY='{"dean@jaipuria.ac.in": {"campuses": [""]}}')
+    check("MCP_FACULTY entry with blank campus rejected at boot",
+          raises(cfgmod.validate_config))
+    reload_with(MCP_FACULTY="", OAUTH_DEFAULT_CAMPUSES='["noida", ""]')
+    check("blank campus in OAuth default rejected at boot",
+          raises(cfgmod.validate_config))
 
     # Boot validation: half-configured OAuth and a non-https base URL must fail closed.
     reload_with(OAUTH_DEFAULT_CAMPUSES="all", GOOGLE_OAUTH_CLIENT_SECRET="")

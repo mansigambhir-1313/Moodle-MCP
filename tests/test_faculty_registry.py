@@ -137,6 +137,8 @@ print("PHASE 7 — identity gates unchanged")
 reset(rows={"prof@jaipuria.ac.in": {"name": "P", "campuses": "all", "active": True}})
 check("unverified email denied",
       principal_from_claims({"email": "prof@jaipuria.ac.in", "email_verified": False}) is None)
+check("missing verification claim denied",
+      principal_from_claims({"email": "prof@jaipuria.ac.in"}) is None)
 check("foreign domain denied",
       principal_from_claims(claims("prof@gmail.com")) is None)
 check("empty claims denied", principal_from_claims({}) is None)

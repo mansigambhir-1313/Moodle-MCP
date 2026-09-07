@@ -22,6 +22,7 @@ The MCP's DB credential is reporting_readonly: it can SELECT this table (RLS
 policy) and cannot write it. Roster changes happen out-of-band with the service
 role — see OPERATIONS.md for the bulk-load runbook.
 """
+import hashlib
 import logging
 
 from cache import TTLCache
@@ -35,6 +36,11 @@ _MISS = "__no_grant__"
 _grants = TTLCache(maxsize=4096, ttl=_GRANT_TTL)
 _stale_grants = TTLCache(maxsize=4096, ttl=3600.0)  # last-known-good, outage grace
 _students = TTLCache(maxsize=8192, ttl=_STUDENT_TTL)
+
+
+def _subject(email: str) -> str:
+    """Stable diagnostic identifier that does not put a faculty email in logs."""
+    return hashlib.sha256(email.encode()).hexdigest()[:12]
 
 
 def _sb():
@@ -81,17 +87,19 @@ def faculty_grant(email: str):
     except Exception:  # noqa: BLE001 — DB down != access granted
         stale = _stale_grants.get(email)
         if stale is not None:
-            log.warning("faculty lookup failed for %s — serving last-known-good grant", email)
+            log.warning("faculty lookup failed for subject=%s — serving last-known-good grant",
+                        _subject(email))
             return dict(stale)
-        log.warning("faculty lookup failed for %s — fail-closed deny", email, exc_info=True)
+        log.warning("faculty lookup failed for subject=%s — fail-closed deny",
+                    _subject(email), exc_info=True)
         return None
     if not row or row.get("active") is not True:
         _grants.set(email, _MISS)
         return None
     campuses = normalize_campuses(row.get("campuses"))
     if campuses == "invalid":
-        log.error("mcp_faculty row for %s has malformed campuses %r — denying",
-                  email, row.get("campuses"))
+        log.error("mcp_faculty row for subject=%s has malformed campuses %r — denying",
+                  _subject(email), row.get("campuses"))
         _grants.set(email, _MISS)
         return None
     grant = {"name": row.get("name"), "campuses": campuses}
@@ -114,9 +122,10 @@ def is_student(email: str) -> bool:
     try:
         found = _fetch_student_hit(email)
     except Exception:  # noqa: BLE001
-        log.warning("student-roster check failed for %s — fail-closed deny", email)
+        log.warning("student-roster check failed for subject=%s — fail-closed deny",
+                    _subject(email))
         return True
     _students.set(email, found)
     if found:
-        log.warning("access denied: %s is in the student roster", email)
+        log.warning("access denied: subject=%s is in the student roster", _subject(email))
     return found

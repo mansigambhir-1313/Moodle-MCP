@@ -1,4 +1,4 @@
-"""Jaipuria Moodle Reports MCP — faculty-facing, read-only.
+"""Jaipuria Moodle Reports MCP — faculty-facing and campus-scoped.
 
 Exposes the generated student reports and deterministic cohort analytics from the
 student-report-system Supabase project. Every DB tool is SELECT-only

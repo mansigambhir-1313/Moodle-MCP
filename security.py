@@ -109,7 +109,9 @@ def principal_from_claims(claims: dict):
     verified = claims.get("email_verified")
     if verified is None:  # Google userinfo v2 spells it verified_email
         verified = (claims.get("google_user_data") or {}).get("verified_email")
-    if verified is False:
+    # Missing is not verified. Google returns a real bool in either the OIDC claim
+    # or userinfo v2 payload, so require True instead of treating None as success.
+    if verified is not True:
         return None
     domain = email.rsplit("@", 1)[1]
 
@@ -140,14 +142,15 @@ def principal_from_claims(claims: dict):
     #    address outside the allowed domains (e.g. a random gmail) is denied here.
     allowed = settings.oauth_allowed_domains()
     if not any(domain == a or domain.endswith("." + a) for a in allowed):
-        log.warning("oauth sign-in rejected: %s not allowlisted and domain %r not allowed",
-                    email, domain)
+        subject = hashlib.sha256(email.encode()).hexdigest()[:12]
+        log.warning("oauth sign-in rejected: subject=%s domain %r not allowed", subject, domain)
         return None
 
     # 5. Default grant for an allowed-domain account with no explicit row.
     default = settings.oauth_default_campuses()
     if default == "deny":
-        log.warning("oauth sign-in rejected: %s has no grant (OAUTH_DEFAULT_CAMPUSES=none)", email)
+        subject = hashlib.sha256(email.encode()).hexdigest()[:12]
+        log.warning("oauth sign-in rejected: subject=%s has no explicit grant", subject)
         return None
     return {"name": claims.get("name") or email, "email": email, "campuses": default}
 
@@ -228,8 +231,8 @@ def client_ip(scope, headers: dict) -> str:
 
 class TransportGuard:
     """First line of defense on every /mcp request, before JSON-RPC:
-      * cap the request body (declared Content-Length) -> 413, so an unbounded
-        POST can't pressure memory;
+      * cap the declared and actually received request body -> 413, so chunked
+        or dishonest Content-Length requests cannot pressure memory;
       * per-IP rate limit -> 429, to blunt unauthenticated floods / token guessing;
       * require a valid bearer -> real 401, so tool enumeration is impossible.
     /health stays open; OPTIONS (credential-free CORS preflight) passes through;
@@ -258,7 +261,8 @@ class TransportGuard:
             return await self.app(scope, receive, send)
         headers = {k.decode().lower(): v.decode() for k, v in (scope.get("headers") or [])}
 
-        # 1. body-size cap (declared Content-Length)
+        # 1. Fast reject a declared oversized body. We also count the ASGI stream
+        # below because Content-Length may be absent (chunked) or dishonest.
         cl = headers.get("content-length")
         if cl is not None:
             try:
@@ -277,12 +281,40 @@ class TransportGuard:
                 pass
 
         # 3. auth (static-token mode only; OAuth mode delegates to FastMCP auth)
-        if not self.check_bearer:
-            return await self.app(scope, receive, send)
-        token = bearer_of(headers)
-        if resolve_principal(token) is None:
-            return await _send_json(send, 401, {"error": "unauthorized"},
-                                    extra={b"www-authenticate": b'Bearer realm="moodle-mcp"'})
+        if self.check_bearer:
+            token = bearer_of(headers)
+            if resolve_principal(token) is None:
+                return await _send_json(send, 401, {"error": "unauthorized"},
+                                        extra={b"www-authenticate": b'Bearer realm="moodle-mcp"'})
+
+        # 4. Count the actual stream before downstream parsers buffer it. MCP and
+        # OAuth mutation endpoints use POST; limiting other methods too makes the
+        # guard safe if a new endpoint is added later.
+        if scope.get("method") in ("POST", "PUT", "PATCH"):
+            messages = []
+            total = 0
+            while True:
+                message = await receive()
+                messages.append(message)
+                if message.get("type") != "http.request":
+                    break
+                total += len(message.get("body", b""))
+                if total > self.max_body:
+                    return await _send_json(send, 413, {"error": "request_too_large"})
+                if not message.get("more_body"):
+                    break
+            index = 0
+
+            async def replay_receive():
+                nonlocal index
+                if index < len(messages):
+                    message = messages[index]
+                    index += 1
+                    return message
+                return {"type": "http.disconnect"}
+
+            receive = replay_receive
+
         return await self.app(scope, receive, send)
 
 

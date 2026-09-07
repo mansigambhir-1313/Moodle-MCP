@@ -1,7 +1,7 @@
 # Operations & scaling notes
 
 Operational assumptions and runbooks for the deployed Moodle Reports MCP
-(Render web service → `https://moodle-mcp-f6do.onrender.com`).
+(Render web service → `https://moodle-mcp.tryrehearsal.ai`).
 
 ## Deployment
 - **Host:** Render web service `srv-da61ppjncjis73aer1hg`, branch `main`, auto-deploy on.
@@ -56,10 +56,10 @@ so the public ping is safe.
 
 ## Runbook — check it's healthy
 ```bash
-curl -s https://moodle-mcp-f6do.onrender.com/health          # {"status":"ok"}
+curl -s https://moodle-mcp.tryrehearsal.ai/health          # {"status":"ok"}
 # tokenless MCP call must be rejected:
 curl -s -o /dev/null -w '%{http_code}\n' -X POST \
-  https://moodle-mcp-f6do.onrender.com/mcp                    # 401
+  https://moodle-mcp.tryrehearsal.ai/mcp                    # 401
 ```
 
 ## Keep-warm — measured reality (2026-09-01)
@@ -86,9 +86,9 @@ provider, or accept re-login as the cost of a deploy.
 - With OAuth enabled, `MCP_TOKENS` / `MCP_ADMIN_TOKEN` are never consulted on
   `/mcp` (FastMCP rejects foreign bearers first). Remove them from Render so they
   are not live secrets sitting unused in env.
-- `OAUTH_DEFAULT_CAMPUSES=all` (the code default) + empty `MCP_FACULTY` means
-  every verified `jaipuria.ac.in` Google account — students and alumni included,
-  if they hold domain accounts — can read every campus's marks. The server now
+- `OAUTH_DEFAULT_CAMPUSES=all` (an explicit unsafe override) + an empty faculty registry means
+  every verified `jaipuria.ac.in` Google account not found in the student roster —
+  including alumni and other non-faculty accounts — can read every campus's marks. The server now
   logs a boot warning for this combination; the faculty-only configuration is
   `OAUTH_DEFAULT_CAMPUSES=none` plus explicit `MCP_FACULTY` entries.
 

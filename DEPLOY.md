@@ -25,7 +25,7 @@ curl localhost:8899/health          # -> {"status":"ok",...}
 cd "moodle-mcp" && source .venv/bin/activate
 MCP_URL="http://localhost:8899/mcp" MCP_TOKEN="test-token-123" python test_client.py
 ```
-Expected: 16 tools listed; `whoami` → admin/all; `accuracy_overview` → mean accuracy %; `at_risk_students` → a count.
+Expected: 26 tools listed; `whoami` → admin/all; `cohort_pulse` → cohort KPIs; `at_risk_students` → a count.
 
 ## B. Deploy to Render (blueprint, ~3 min)
 
@@ -98,7 +98,7 @@ Workspace** account:
 | `MCP_SERVER_BASE_URL` | `https://<render-url>` (must be the public https URL) |
 | `OAUTH_JWT_SIGNING_KEY` | `python3 -c "import secrets;print(secrets.token_urlsafe(48))"` — keeps logins valid across redeploys |
 | `OAUTH_ALLOWED_DOMAINS` | `jaipuria.ac.in` (default) |
-| `OAUTH_DEFAULT_CAMPUSES` | `all` (default) \| `none` (only emails in `MCP_FACULTY`) \| `["jaipur"]` |
+| `OAUTH_DEFAULT_CAMPUSES` | `none` (default; explicit grants only) \| `all` \| `["jaipur"]` |
 | `MCP_FACULTY` | optional per-email grants, e.g. `{"tnp.indore@jaipuria.ac.in":{"name":"Indore TNP","campuses":["indore"]}}` |
 
 ### 3. Connect
