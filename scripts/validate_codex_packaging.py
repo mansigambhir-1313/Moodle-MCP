@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the standalone and team-marketplace Codex plugin bundles."""
+"""Validate the team-marketplace Codex plugin bundle."""
 
 from __future__ import annotations
 
@@ -109,13 +109,7 @@ def validate_marketplace(repo_root: Path) -> None:
             or policy.get("authentication") != "ON_INSTALL":
         raise ValueError(f"{marketplace_path}: explicit install/auth policies are required")
 
-    team_manifest, team_url = validate_plugin(repo_root / "plugins" / "moodle-mcp")
-    root_manifest, root_url = validate_plugin(repo_root)
-    for field in ("name", "version", "description", "homepage", "repository"):
-        if team_manifest.get(field) != root_manifest.get(field):
-            raise ValueError(f"standalone and team manifests disagree on {field}")
-    if team_url != root_url:
-        raise ValueError("standalone and team plugins target different MCP URLs")
+    validate_plugin(repo_root / "plugins" / "moodle-mcp")
 
 
 def main() -> int:
@@ -125,7 +119,7 @@ def main() -> int:
     except ValueError as exc:
         print(f"Codex packaging invalid: {exc}", file=sys.stderr)
         return 1
-    print("Codex packaging valid: standalone plugin + jaipuria-ai-labs marketplace")
+    print("Codex packaging valid: moodle-mcp + jaipuria-ai-labs marketplace")
     return 0
 
 

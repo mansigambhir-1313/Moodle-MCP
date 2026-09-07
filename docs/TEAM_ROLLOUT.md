@@ -9,7 +9,7 @@ workspace plugin. It assumes the production endpoint remains
 1. Merge the reviewed `codex/moodle-codex-compat` pull request into `main`. Do not push directly
    to `main`; Render auto-deploys the merge.
 2. Require the `ci / test` check on the pull request. It installs the pinned/runtime
-   dependencies, checks them, validates both Codex bundles and the marketplace, and runs every
+   dependencies, checks them, validates the Codex bundle and marketplace, and runs every
    isolated repository test script.
 3. Wait for Render's `/health` deployment check, then run the GitHub Actions `live-smoke`
    workflow manually. It verifies health, OAuth discovery, PKCE/refresh-token metadata, and the

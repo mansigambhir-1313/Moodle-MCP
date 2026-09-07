@@ -13,7 +13,8 @@ authorization, transport, operations, and publishing readiness.
 The deployed MCP already has the most important runtime prerequisites for Codex: a public HTTPS
 Streamable HTTP endpoint, an OAuth protected-resource document, authorization-server metadata,
 dynamic client registration, authorization code flow, refresh tokens, and PKCE S256. The source
-repository now also has a Codex plugin manifest and `.mcp.json` endpoint declaration.
+repository now also has a managed Codex plugin bundle and `.mcp.json` endpoint declaration under
+`plugins/moodle-mcp`.
 
 Eight code-level or distribution issues found during this review were fixed in the release branch:
 
@@ -48,7 +49,7 @@ decision logs.
 | Public HTTPS MCP endpoint | Ready | `/mcp` is deployed and returns an OAuth challenge when unauthenticated. |
 | Protected-resource discovery | Ready | `/.well-known/oauth-protected-resource/mcp` advertises the resource and authorization server. |
 | OAuth authorization-server discovery | Ready | Metadata advertises code flow, refresh tokens, DCR, and PKCE S256. |
-| Codex plugin packaging | Added | Standalone and `plugins/moodle-mcp` bundles validate; `.agents/plugins/marketplace.json` supports managed GitHub import. |
+| Codex plugin packaging | Added | `plugins/moodle-mcp` validates and `.agents/plugins/marketplace.json` supports managed GitHub import. |
 | Repeatable release checks | Added | Branch/PR CI runs dependency, packaging, and isolated code checks; `live-smoke` tests the production auth boundary. |
 | Tool titles, descriptions, schemas, annotations | Mostly ready | Tools have routing docstrings, Pydantic schemas, titles, and read/write annotations. |
 | Fail-closed faculty authorization | Improved | Verified email plus explicit grant is now the safe default. |
@@ -161,7 +162,7 @@ data-retention/deletion statement.
 - Static inspection covered config validation, Google claim mapping, campus authorization,
   database access, OAuth persistence, transport middleware, tool annotations, report generation,
   deployment config, and tests.
-- Both Codex plugin bundles and the `jaipuria-ai-labs` marketplace pass validation. The checked-in
+- The Codex plugin bundle and the `jaipuria-ai-labs` marketplace pass validation. The checked-in
   read-only production smoke script passes against the live endpoint.
 - A Python 3.12 production image builds without Docker warnings. Its static-auth smoke run returns
   `/health` 200, rejects a tokenless initialize with 401, completes an authenticated Streamable
