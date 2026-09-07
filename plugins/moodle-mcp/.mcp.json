@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "moodle-mcp": {
+      "type": "http",
+      "url": "https://moodle-mcp.tryrehearsal.ai/mcp"
+    }
+  }
+}

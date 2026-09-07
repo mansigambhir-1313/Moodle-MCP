@@ -125,7 +125,7 @@ def phase3_transport_guard():
         async def receive():
             nonlocal cursor
             if cursor >= len(chunks):
-                return {"type": "http.disconnect"}
+                return {"type": "http.disconnect", "from_upstream": True}
             body = chunks[cursor]
             cursor += 1
             return {"type": "http.request", "body": body,
@@ -175,6 +175,26 @@ def phase3_transport_guard():
     g4 = TransportGuard(app, ip_rate_limit=240)
     st401 = asyncio.run(drive(g4, mcp_scope(ip="2.2.2.2")))
     check("tokenless /mcp -> 401", st401 == 401)
+
+    # Streamable HTTP reads receive() again while sending its response. After the
+    # buffered body is replayed, that call must reach the real socket receive.
+    observed = {}
+
+    async def streaming_app(scope, receive, send):
+        observed["request"] = await receive()
+        observed["next"] = await receive()
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    streaming_guard = TransportGuard(streaming_app, check_bearer=False,
+                                     ip_rate_limit=0)
+    streaming_status = asyncio.run(drive(
+        streaming_guard, mcp_scope(ip="3.3.3.3"), chunks=[b"{}"]
+    ))
+    check("body replay delegates later receive calls to the real connection",
+          streaming_status == 200
+          and observed.get("request", {}).get("type") == "http.request"
+          and observed.get("next", {}).get("from_upstream") is True)
 
 
 def phase4_credential_hygiene():
@@ -329,11 +349,12 @@ def phase5_oauth_signin():
 
 
 def phase6_oauth_compat():
-    print("\nPHASE 6 — OAuth compatibility (URL aliases / DCR-race tolerance)")
+    print("\nPHASE 6 — OAuth compatibility (aliases / DCR guard / race tolerance)")
     import asyncio
     import time as _time
 
-    from oauth_compat import PATH_ALIASES, PathAliases, TolerantGoogleProvider
+    from oauth_compat import (PATH_ALIASES, PathAliases, RegistrationGuard,
+                              TolerantGoogleProvider, _safe_redirect_uri)
 
     # --- PathAliases: exact rewrites only, everything else untouched ----------
     seen = {}
@@ -358,6 +379,60 @@ def phase6_oauth_compat():
     check("/mcp untouched", run("/mcp") == "/mcp")
     check("/health untouched", run("/health") == "/health")
     check("non-http scope untouched", run("/", typ="lifespan") == "/")
+
+    # --- RegistrationGuard: public DCR cannot persist an unsafe callback ------
+    check("HTTPS OAuth callback accepted",
+          _safe_redirect_uri("https://chatgpt.com/connector_platform_oauth_redirect"))
+    check("localhost HTTP callback accepted",
+          _safe_redirect_uri("http://localhost:49152/callback"))
+    check("IPv4 loopback HTTP callback accepted",
+          _safe_redirect_uri("http://127.0.0.1:49152/callback"))
+    check("IPv6 loopback HTTP callback accepted",
+          _safe_redirect_uri("http://[::1]:49152/callback"))
+    check("javascript callback rejected",
+          not _safe_redirect_uri("javascript:alert(1)"))
+    check("remote cleartext callback rejected",
+          not _safe_redirect_uri("http://example.com/callback"))
+    check("callback with credentials rejected",
+          not _safe_redirect_uri("https://user:pass@example.com/callback"))
+    check("callback with fragment rejected",
+          not _safe_redirect_uri("https://example.com/callback#token"))
+
+    async def registration_case(uri):
+        observed, sent = {}, []
+
+        async def registered(scope, receive, send):
+            observed["called"] = True
+            observed["body"] = (await receive()).get("body")
+
+        guard = RegistrationGuard(registered)
+        request_body = ("{\"redirect_uris\":[\"" + uri + "\"]}").encode()
+        delivered = False
+
+        async def receive():
+            nonlocal delivered
+            if not delivered:
+                delivered = True
+                return {"type": "http.request", "body": request_body,
+                        "more_body": False}
+            return {"type": "http.disconnect"}
+
+        async def send(message):
+            sent.append(message)
+
+        await guard({"type": "http", "method": "POST", "path": "/register"},
+                    receive, send)
+        return observed, sent, request_body
+
+    accepted, accepted_sent, original = asyncio.run(registration_case(
+        "https://chatgpt.com/connector_platform_oauth_redirect"))
+    check("registration guard replays accepted body unchanged",
+          accepted.get("called") and accepted.get("body") == original
+          and not accepted_sent)
+    rejected, rejected_sent, _ = asyncio.run(registration_case("javascript:alert(1)"))
+    check("registration guard returns OAuth 400 for unsafe callback",
+          not rejected.get("called") and rejected_sent
+          and rejected_sent[0].get("status") == 400)
 
     # --- TolerantGoogleProvider: client mismatch tolerated only with PKCE -----
     provider = TolerantGoogleProvider(

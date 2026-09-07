@@ -291,10 +291,11 @@ class TransportGuard:
         # OAuth mutation endpoints use POST; limiting other methods too makes the
         # guard safe if a new endpoint is added later.
         if scope.get("method") in ("POST", "PUT", "PATCH"):
+            upstream_receive = receive
             messages = []
             total = 0
             while True:
-                message = await receive()
+                message = await upstream_receive()
                 messages.append(message)
                 if message.get("type") != "http.request":
                     break
@@ -311,7 +312,11 @@ class TransportGuard:
                     message = messages[index]
                     index += 1
                     return message
-                return {"type": "http.disconnect"}
+                # Streamable HTTP keeps listening for the real peer disconnect
+                # while it sends the response. A synthetic disconnect here makes
+                # FastMCP abort with "ASGI callable returned without completing
+                # response" immediately after authenticated initialize.
+                return await upstream_receive()
 
             receive = replay_receive
 

@@ -10,7 +10,7 @@ pip install -r requirements.txt
 # grab the service key from the agent project (or paste your own)
 export SUPABASE_URL="https://sadbfvfcmmxgtatfjfmc.supabase.co"
 export SUPABASE_SERVICE_ROLE_KEY="<your service role key — in moodle-agent/.env>"
-export MCP_ADMIN_TOKEN="test-token-123"
+export MCP_ADMIN_TOKEN="test-token-that-is-at-least-24-characters"
 
 # 1) start the server
 uvicorn server:app --port 8899
@@ -23,9 +23,21 @@ curl localhost:8899/health          # -> {"status":"ok",...}
 
 # 3) full MCP round-trip (lists tools + calls a few with real data)
 cd "moodle-mcp" && source .venv/bin/activate
-MCP_URL="http://localhost:8899/mcp" MCP_TOKEN="test-token-123" python test_client.py
+MCP_URL="http://localhost:8899/mcp" \
+  MCP_TOKEN="test-token-that-is-at-least-24-characters" python test_client.py
 ```
 Expected: 26 tools listed; `whoami` → admin/all; `cohort_pulse` → cohort KPIs; `at_risk_students` → a count.
+
+Before a production merge, also run the repeatable release checks:
+```bash
+python scripts/validate_codex_packaging.py
+for test_file in tests/test_*.py; do FASTMCP_HOME=/tmp/moodle-fastmcp python "$test_file"; done
+python scripts/check_live_endpoint.py https://moodle-mcp.tryrehearsal.ai
+```
+
+For a built local container with dummy Supabase settings, set `MCP_SMOKE_ONLY=1` on
+`test_client.py` to verify the authenticated handshake, all tool descriptors, and `whoami`
+without querying student data.
 
 ## B. Deploy to Render (blueprint, ~3 min)
 
@@ -129,3 +141,10 @@ Notes:
   loss become rare). If the server does restart, issued tokens stay valid
   (`OAUTH_JWT_SIGNING_KEY`), and a user whose refresh fails is simply sent through
   Google sign-in again.
+
+## F. Roll out the Codex plugin to the team
+
+After the release pull request is merged and Render is healthy, follow
+[`docs/TEAM_ROLLOUT.md`](docs/TEAM_ROLLOUT.md). The workspace admin imports the GitHub repository's
+`.agents/plugins/marketplace.json`, assigns a pilot role, and completes one fresh Codex desktop
+OAuth/tool-call test before expanding access.

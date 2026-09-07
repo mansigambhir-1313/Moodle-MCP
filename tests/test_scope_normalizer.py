@@ -104,6 +104,13 @@ def main():
     cap = _run("/mcp", "POST", body=b'{"scope":"email"}', content_type=b"application/json")
     check("/mcp body untouched", cap.body == b'{"scope":"email"}', cap.body)
 
+    # 6. Parse/type errors still replay the original body downstream. The middleware
+    # has consumed receive already, so this is what makes its fail-open promise real.
+    cap = _run("/register", "POST", body=b'{not-json', content_type=b"application/json")
+    check("malformed JSON replayed unchanged", cap.body == b'{not-json', cap.body)
+    cap = _run("/register", "POST", body=b'[]', content_type=b"application/json")
+    check("non-object JSON replayed unchanged", cap.body == b'[]', cap.body)
+
     print(f"\n{PASS} passed, {FAIL} failed")
     return 1 if FAIL else 0
 

@@ -23,7 +23,7 @@ Operational assumptions and runbooks for the deployed Moodle Reports MCP
 ## Rate limiting — single-instance assumption
 The limiters in `security.py` are **in-process**:
 - `MCP_RATE_LIMIT` (default 90) — per-token, per-window (via `GuardMiddleware`).
-- `MCP_IP_RATE_LIMIT` (default 240) — per-IP, pre-auth (via `TransportGuard`).
+- `MCP_IP_RATE_LIMIT` (default 1200) — per-IP, pre-auth (via `TransportGuard`).
 
 These are correct **on a single instance**. If the service is ever scaled to
 **multiple instances** (Render horizontal scaling), each instance keeps its own
@@ -70,17 +70,6 @@ hit ~30-60s cold starts (observed as 9-22s 401/504 responses mid-morning). If co
 starts matter, use an external pinger (UptimeRobot / cron-job.org, 5-min interval,
 same unauthenticated `/health`) or move the service to a paid always-on plan. The
 Action stays as a harmless backstop.
-
-## Deploys log every user out (known limitation)
-FastMCP's OAuth proxy stores dynamic client registrations, JTI mappings and
-upstream tokens in an encrypted DiskStore under the app user's home directory —
-which is ephemeral on Render. Every deploy or restart therefore invalidates all
-issued tokens ("JTI mapping not found" → 401 invalid_token) and each connected
-host must re-run Google sign-in. `OAUTH_JWT_SIGNING_KEY` keeps the JWTs
-*verifiable* but not the JTI map, so it does not prevent this. Fix when it becomes
-painful: pass a persistent `client_storage` (Redis, or a Postgres-backed
-key-value store — the Supabase project itself can host the table) into the
-provider, or accept re-login as the cost of a deploy.
 
 ## Env hygiene
 - With OAuth enabled, `MCP_TOKENS` / `MCP_ADMIN_TOKEN` are never consulted on

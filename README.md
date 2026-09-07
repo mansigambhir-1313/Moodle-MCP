@@ -117,9 +117,15 @@ See [`docs/INNOVATION_ROADMAP.md`](docs/INNOVATION_ROADMAP.md) for Phase-3 ideas
 ### Connect Codex (deployed server)
 
 This repository is a Codex plugin bundle: `.codex-plugin/plugin.json` supplies presentation
-metadata and `.mcp.json` points at the production server. Install `moodle-mcp` from the configured
-local/team marketplace, start a new Codex task, and complete the Google OAuth prompt. The server
-uses dynamic client registration and PKCE, so no static bearer token belongs in the plugin.
+metadata and `.mcp.json` points at the production server. The checked-in
+`.agents/plugins/marketplace.json` exposes the distributable bundle under `plugins/moodle-mcp` for
+a workspace admin to import from GitHub. Install `moodle-mcp`, start a new Codex desktop task, and
+complete the Google OAuth prompt. The server uses dynamic client registration and PKCE, so no
+static bearer token belongs in the plugin.
+
+Because the plugin declares `.mcp.json`, workspace distribution is desktop-only even though the
+server is remote HTTPS. See [`docs/TEAM_ROLLOUT.md`](docs/TEAM_ROLLOUT.md) for the admin import,
+pilot, release-gate, and rollback steps.
 
 See [`docs/CODEX_GAP_ANALYSIS.md`](docs/CODEX_GAP_ANALYSIS.md) for the compatibility and security
 review.

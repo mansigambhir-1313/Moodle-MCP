@@ -15,7 +15,7 @@ Streamable HTTP endpoint, an OAuth protected-resource document, authorization-se
 dynamic client registration, authorization code flow, refresh tokens, and PKCE S256. The source
 repository now also has a Codex plugin manifest and `.mcp.json` endpoint declaration.
 
-Three code-level issues found during this review were fixed:
+Eight code-level or distribution issues found during this review were fixed in the release branch:
 
 1. Google identities with a missing email-verification claim were accepted. Verification is now
    required to be exactly `true`.
@@ -24,6 +24,18 @@ Three code-level issues found during this review were fixed:
 3. The transport limit trusted only `Content-Length`. Chunked or dishonest requests could bypass
    it and be buffered by OAuth/MCP parsers. The actual ASGI request stream is now counted and
    rejected above `MCP_MAX_BODY_BYTES`.
+4. Dynamic registration accepted active-content and remote cleartext callback URIs. A fail-closed
+   registration guard now allows HTTPS and native loopback HTTP callbacks only.
+5. The plugin had no GitHub-importable team marketplace or CI release gate. The repository now
+   contains both, plus a scheduled/manual production smoke test.
+6. The request-body limiter replayed a synthetic disconnect after authenticated initialization,
+   causing FastMCP Streamable HTTP responses to abort. Replay now delegates later receive calls to
+   the real client connection.
+7. Scope normalization consumed malformed OAuth request bodies before its advertised fail-open
+   path. It now replays the original bytes so FastMCP can return the protocol error normally.
+8. The Docker build context had no exclusions, so local secrets, repository history, caches, and
+   analysis artifacts could be copied into an image. `.dockerignore` now excludes those paths,
+   especially `.env` files, while retaining `.env.example` as non-secret documentation.
 
 Configuration validation was also tightened so a missing `campuses` key cannot accidentally mean
 an all-campus faculty grant, and faculty email addresses are no longer written verbatim to auth
@@ -36,7 +48,8 @@ decision logs.
 | Public HTTPS MCP endpoint | Ready | `/mcp` is deployed and returns an OAuth challenge when unauthenticated. |
 | Protected-resource discovery | Ready | `/.well-known/oauth-protected-resource/mcp` advertises the resource and authorization server. |
 | OAuth authorization-server discovery | Ready | Metadata advertises code flow, refresh tokens, DCR, and PKCE S256. |
-| Codex plugin packaging | Added | `.codex-plugin/plugin.json`, `.mcp.json`, and the existing 128×128 logo form a plugin bundle. |
+| Codex plugin packaging | Added | Standalone and `plugins/moodle-mcp` bundles validate; `.agents/plugins/marketplace.json` supports managed GitHub import. |
+| Repeatable release checks | Added | Branch/PR CI runs dependency, packaging, and isolated code checks; `live-smoke` tests the production auth boundary. |
 | Tool titles, descriptions, schemas, annotations | Mostly ready | Tools have routing docstrings, Pydantic schemas, titles, and read/write annotations. |
 | Fail-closed faculty authorization | Improved | Verified email plus explicit grant is now the safe default. |
 | Stream body limit | Fixed | Actual bytes are capped, including chunked requests. |
@@ -114,15 +127,16 @@ can weaken pre-auth throttling when the origin is reachable directly.
 Recommended change: enforce the unauthenticated limit at Cloudflare/Render or a shared store, close
 direct-origin access where possible, and consume forwarded IP headers only from trusted proxies.
 
-### P2 — repair the test and CI shape
+### P2 — standardize the test shape
 
 The files under `tests/` are executable scripts with top-level counters and `sys.exit`. Individual
 scripts pass, but normal `pytest` collection is not reliable and can share mutated module/config
-state. There is no CI gate proving plugin validation, auth behavior, or MCP handshake compatibility.
+state. CI now executes every script in isolation and validates the plugin/marketplace, but the
+suite is still unconventional and harder for IDEs and coverage tools to consume.
 
-Recommended change: convert these scripts to isolated pytest tests with fixtures, add a standard
-test command, validate the plugin manifest in CI, and run an unauthenticated discovery smoke test
-against staging.
+Recommended change: convert these scripts to isolated pytest tests with fixtures and add coverage.
+Keep the checked-in production smoke test, and add a separate staging endpoint before testing
+post-auth tool calls in automation.
 
 ### P3 — publishing and documentation readiness
 
@@ -137,11 +151,23 @@ data-retention/deletion statement.
 - `GET /health` returned `200 {"status":"ok"}`.
 - OAuth protected-resource and authorization-server metadata returned `200` and advertised DCR,
   authorization code, refresh token, and PKCE S256 support.
+- A Codex-style dynamic registration using the advertised full Google scopes returned `201`; the
+  authorization endpoint created a consent transaction. The final Google consent/token exchange
+  remains the explicit fresh-user-session gate.
+- The live release rejected short `email profile` scope names and accepted a `javascript:` callback
+  at registration. Both behaviors differ from the hardened release branch: scope normalization is
+  already covered by tests, and unsafe callbacks are now rejected before persistence. Merge and
+  deploy the release branch before team rollout.
 - Static inspection covered config validation, Google claim mapping, campus authorization,
   database access, OAuth persistence, transport middleware, tool annotations, report generation,
   deployment config, and tests.
+- Both Codex plugin bundles and the `jaipuria-ai-labs` marketplace pass validation. The checked-in
+  read-only production smoke script passes against the live endpoint.
+- A Python 3.12 production image builds without Docker warnings. Its static-auth smoke run returns
+  `/health` 200, rejects a tokenless initialize with 401, completes an authenticated Streamable
+  HTTP session, lists all 26 tools, and returns the expected `whoami` scope.
 - All repository test scripts pass individually after the fixes; the test harness limitation above
-  remains until they are converted to conventional pytest tests (141 checks passed in this review).
+  remains until they are converted to conventional pytest tests (154 checks pass in this review).
 
 ## Relevant OpenAI requirements
 
