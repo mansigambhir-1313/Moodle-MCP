@@ -9,5 +9,6 @@ COPY . .
 RUN useradd -u 10001 -m appuser
 USER appuser
 
-# shell form so $PORT expands at container start
-CMD uvicorn server:app --host 0.0.0.0 --port ${PORT:-8000}
+# The shell expands Render's $PORT; exec makes uvicorn PID 1 so deploy signals
+# reach it directly for a graceful shutdown.
+CMD ["sh", "-c", "exec uvicorn server:app --host 0.0.0.0 --port ${PORT:-8000}"]

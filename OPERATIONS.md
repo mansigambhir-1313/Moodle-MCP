@@ -1,7 +1,7 @@
 # Operations & scaling notes
 
 Operational assumptions and runbooks for the deployed Moodle Reports MCP
-(Render web service → `https://moodle-mcp-f6do.onrender.com`).
+(Render web service → `https://moodle-mcp.tryrehearsal.ai`).
 
 ## Deployment
 - **Host:** Render web service `srv-da61ppjncjis73aer1hg`, branch `main`, auto-deploy on.
@@ -23,7 +23,7 @@ Operational assumptions and runbooks for the deployed Moodle Reports MCP
 ## Rate limiting — single-instance assumption
 The limiters in `security.py` are **in-process**:
 - `MCP_RATE_LIMIT` (default 90) — per-token, per-window (via `GuardMiddleware`).
-- `MCP_IP_RATE_LIMIT` (default 240) — per-IP, pre-auth (via `TransportGuard`).
+- `MCP_IP_RATE_LIMIT` (default 1200) — per-IP, pre-auth (via `TransportGuard`).
 
 These are correct **on a single instance**. If the service is ever scaled to
 **multiple instances** (Render horizontal scaling), each instance keeps its own
@@ -56,10 +56,10 @@ so the public ping is safe.
 
 ## Runbook — check it's healthy
 ```bash
-curl -s https://moodle-mcp-f6do.onrender.com/health          # {"status":"ok"}
+curl -s https://moodle-mcp.tryrehearsal.ai/health          # {"status":"ok"}
 # tokenless MCP call must be rejected:
 curl -s -o /dev/null -w '%{http_code}\n' -X POST \
-  https://moodle-mcp-f6do.onrender.com/mcp                    # 401
+  https://moodle-mcp.tryrehearsal.ai/mcp                    # 401
 ```
 
 ## Keep-warm — measured reality (2026-09-01)
@@ -71,24 +71,13 @@ starts matter, use an external pinger (UptimeRobot / cron-job.org, 5-min interva
 same unauthenticated `/health`) or move the service to a paid always-on plan. The
 Action stays as a harmless backstop.
 
-## Deploys log every user out (known limitation)
-FastMCP's OAuth proxy stores dynamic client registrations, JTI mappings and
-upstream tokens in an encrypted DiskStore under the app user's home directory —
-which is ephemeral on Render. Every deploy or restart therefore invalidates all
-issued tokens ("JTI mapping not found" → 401 invalid_token) and each connected
-host must re-run Google sign-in. `OAUTH_JWT_SIGNING_KEY` keeps the JWTs
-*verifiable* but not the JTI map, so it does not prevent this. Fix when it becomes
-painful: pass a persistent `client_storage` (Redis, or a Postgres-backed
-key-value store — the Supabase project itself can host the table) into the
-provider, or accept re-login as the cost of a deploy.
-
 ## Env hygiene
 - With OAuth enabled, `MCP_TOKENS` / `MCP_ADMIN_TOKEN` are never consulted on
   `/mcp` (FastMCP rejects foreign bearers first). Remove them from Render so they
   are not live secrets sitting unused in env.
-- `OAUTH_DEFAULT_CAMPUSES=all` (the code default) + empty `MCP_FACULTY` means
-  every verified `jaipuria.ac.in` Google account — students and alumni included,
-  if they hold domain accounts — can read every campus's marks. The server now
+- `OAUTH_DEFAULT_CAMPUSES=all` (an explicit unsafe override) + an empty faculty registry means
+  every verified `jaipuria.ac.in` Google account not found in the student roster —
+  including alumni and other non-faculty accounts — can read every campus's marks. The server now
   logs a boot warning for this combination; the faculty-only configuration is
   `OAUTH_DEFAULT_CAMPUSES=none` plus explicit `MCP_FACULTY` entries.
 

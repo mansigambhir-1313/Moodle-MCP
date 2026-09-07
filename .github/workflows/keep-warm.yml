@@ -22,7 +22,7 @@ jobs:
       - name: Ping /health
         run: |
           set -euo pipefail
-          URL="https://moodle-mcp-f6do.onrender.com/health"
+          URL="https://moodle-mcp.tryrehearsal.ai/health"
           # Retry to cover a cold start (free tier can take ~30–60s to wake).
           for i in $(seq 1 10); do
             code=$(curl -s -o /tmp/body -w "%{http_code}" --max-time 60 "$URL" || echo 000)

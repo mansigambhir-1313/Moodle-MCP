@@ -117,11 +117,19 @@ def phase3_transport_guard():
         await send({"type": "http.response.start", "status": 200, "headers": []})
         await send({"type": "http.response.body", "body": b""})
 
-    async def drive(guard, scope):
+    async def drive(guard, scope, chunks=None):
         sent = []
+        chunks = list(chunks or [b""])
+        cursor = 0
 
         async def receive():
-            return {"type": "http.request", "body": b"", "more_body": False}
+            nonlocal cursor
+            if cursor >= len(chunks):
+                return {"type": "http.disconnect", "from_upstream": True}
+            body = chunks[cursor]
+            cursor += 1
+            return {"type": "http.request", "body": body,
+                    "more_body": cursor < len(chunks)}
 
         async def send(m):
             sent.append(m)
@@ -139,6 +147,15 @@ def phase3_transport_guard():
     st = asyncio.run(drive(g, mcp_scope(headers=[(b"content-length", b"999999")])))
     check("oversized body -> 413", st == 413)
     check("oversized body never reaches the app", not app_calls)
+
+    # A chunked request has no Content-Length. The received-byte cap must still
+    # reject it before OAuth/MCP body parsers can buffer an unbounded payload.
+    app_calls.clear()
+    g_chunked = TransportGuard(app, max_body=1024, ip_rate_limit=240,
+                               check_bearer=False)
+    st = asyncio.run(drive(g_chunked, mcp_scope(), chunks=[b"a" * 600, b"b" * 600]))
+    check("oversized chunked body -> 413", st == 413)
+    check("oversized chunked body never reaches the app", not app_calls)
 
     # 2. per-IP limit -> first request passes IP (401 no-token), second 429
     g2 = TransportGuard(app, max_body=262144, ip_rate_limit=1)
@@ -158,6 +175,26 @@ def phase3_transport_guard():
     g4 = TransportGuard(app, ip_rate_limit=240)
     st401 = asyncio.run(drive(g4, mcp_scope(ip="2.2.2.2")))
     check("tokenless /mcp -> 401", st401 == 401)
+
+    # Streamable HTTP reads receive() again while sending its response. After the
+    # buffered body is replayed, that call must reach the real socket receive.
+    observed = {}
+
+    async def streaming_app(scope, receive, send):
+        observed["request"] = await receive()
+        observed["next"] = await receive()
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    streaming_guard = TransportGuard(streaming_app, check_bearer=False,
+                                     ip_rate_limit=0)
+    streaming_status = asyncio.run(drive(
+        streaming_guard, mcp_scope(ip="3.3.3.3"), chunks=[b"{}"]
+    ))
+    check("body replay delegates later receive calls to the real connection",
+          streaming_status == 200
+          and observed.get("request", {}).get("type") == "http.request"
+          and observed.get("next", {}).get("from_upstream") is True)
 
 
 def phase4_credential_hygiene():
@@ -236,6 +273,7 @@ def phase5_oauth_signin():
                 GOOGLE_OAUTH_CLIENT_ID="id.apps.googleusercontent.com",
                 GOOGLE_OAUTH_CLIENT_SECRET="GOCSPX-x",
                 MCP_SERVER_BASE_URL="https://mcp.example.com",
+                OAUTH_DEFAULT_CAMPUSES="none",
                 OAUTH_JWT_SIGNING_KEY="k" * 32)
     import security
     importlib.reload(security)
@@ -251,27 +289,48 @@ def phase5_oauth_signin():
     _reg._grants = _reg.TTLCache(maxsize=8, ttl=0.0)
     _reg._students = _reg.TTLCache(maxsize=8, ttl=0.0)
 
-    p = principal_from_claims({"email": "Prof@Jaipuria.ac.in", "name": "Prof"})
+    p = principal_from_claims({"email": "Prof@Jaipuria.ac.in", "email_verified": True,
+                               "name": "Prof"})
+    check("unlisted domain user denied by the secure default", p is None)
+
+    reload_with(OAUTH_DEFAULT_CAMPUSES="all")
+    p = principal_from_claims({"email": "Prof@Jaipuria.ac.in", "email_verified": True,
+                               "name": "Prof"})
     check("jaipuria.ac.in email accepted (case-insensitive)",
           p is not None and p["email"] == "prof@jaipuria.ac.in")
-    check("default grant is all campuses", p is not None and p["campuses"] is None)
-    check("outside domain rejected", principal_from_claims({"email": "x@gmail.com"}) is None)
-    check("missing email rejected", principal_from_claims({"name": "X"}) is None)
+    check("explicit all-campus default applies", p is not None and p["campuses"] is None)
+    check("outside domain rejected",
+          principal_from_claims({"email": "x@gmail.com", "email_verified": True}) is None)
+    check("missing email rejected",
+          principal_from_claims({"name": "X", "email_verified": True}) is None)
+    check("missing verification claim rejected",
+          principal_from_claims({"email": "p@jaipuria.ac.in"}) is None)
     check("unverified email rejected (userinfo v2 spelling)",
           principal_from_claims({"email": "p@jaipuria.ac.in",
                                  "google_user_data": {"verified_email": False}}) is None)
 
     reload_with(MCP_FACULTY='{"dean@jaipuria.ac.in": {"name": "Dean", "campuses": ["jaipur"]}}',
                 OAUTH_DEFAULT_CAMPUSES="none")
-    p = principal_from_claims({"email": "dean@jaipuria.ac.in"})
+    p = principal_from_claims({"email": "dean@jaipuria.ac.in", "email_verified": True})
     check("MCP_FACULTY override narrows campuses",
           p is not None and p["campuses"] == ["jaipur"])
     check("unlisted email denied when OAUTH_DEFAULT_CAMPUSES=none",
-          principal_from_claims({"email": "other@jaipuria.ac.in"}) is None)
+          principal_from_claims({"email": "other@jaipuria.ac.in",
+                                 "email_verified": True}) is None)
 
     reload_with(OAUTH_DEFAULT_CAMPUSES='["noida"]', MCP_FACULTY="")
-    p = principal_from_claims({"email": "other@jaipuria.ac.in"})
+    p = principal_from_claims({"email": "other@jaipuria.ac.in", "email_verified": True})
     check("JSON-list default grant applies", p is not None and p["campuses"] == ["noida"])
+
+    reload_with(MCP_FACULTY='{"dean@jaipuria.ac.in": {"name": "Dean"}}')
+    check("MCP_FACULTY entry without campuses rejected at boot",
+          raises(cfgmod.validate_config))
+    reload_with(MCP_FACULTY='{"dean@jaipuria.ac.in": {"campuses": [""]}}')
+    check("MCP_FACULTY entry with blank campus rejected at boot",
+          raises(cfgmod.validate_config))
+    reload_with(MCP_FACULTY="", OAUTH_DEFAULT_CAMPUSES='["noida", ""]')
+    check("blank campus in OAuth default rejected at boot",
+          raises(cfgmod.validate_config))
 
     # Boot validation: half-configured OAuth and a non-https base URL must fail closed.
     reload_with(OAUTH_DEFAULT_CAMPUSES="all", GOOGLE_OAUTH_CLIENT_SECRET="")
@@ -290,11 +349,12 @@ def phase5_oauth_signin():
 
 
 def phase6_oauth_compat():
-    print("\nPHASE 6 — OAuth compatibility (URL aliases / DCR-race tolerance)")
+    print("\nPHASE 6 — OAuth compatibility (aliases / DCR guard / race tolerance)")
     import asyncio
     import time as _time
 
-    from oauth_compat import PATH_ALIASES, PathAliases, TolerantGoogleProvider
+    from oauth_compat import (PATH_ALIASES, PathAliases, RegistrationGuard,
+                              TolerantGoogleProvider, _safe_redirect_uri)
 
     # --- PathAliases: exact rewrites only, everything else untouched ----------
     seen = {}
@@ -319,6 +379,60 @@ def phase6_oauth_compat():
     check("/mcp untouched", run("/mcp") == "/mcp")
     check("/health untouched", run("/health") == "/health")
     check("non-http scope untouched", run("/", typ="lifespan") == "/")
+
+    # --- RegistrationGuard: public DCR cannot persist an unsafe callback ------
+    check("HTTPS OAuth callback accepted",
+          _safe_redirect_uri("https://chatgpt.com/connector_platform_oauth_redirect"))
+    check("localhost HTTP callback accepted",
+          _safe_redirect_uri("http://localhost:49152/callback"))
+    check("IPv4 loopback HTTP callback accepted",
+          _safe_redirect_uri("http://127.0.0.1:49152/callback"))
+    check("IPv6 loopback HTTP callback accepted",
+          _safe_redirect_uri("http://[::1]:49152/callback"))
+    check("javascript callback rejected",
+          not _safe_redirect_uri("javascript:alert(1)"))
+    check("remote cleartext callback rejected",
+          not _safe_redirect_uri("http://example.com/callback"))
+    check("callback with credentials rejected",
+          not _safe_redirect_uri("https://user:pass@example.com/callback"))
+    check("callback with fragment rejected",
+          not _safe_redirect_uri("https://example.com/callback#token"))
+
+    async def registration_case(uri):
+        observed, sent = {}, []
+
+        async def registered(scope, receive, send):
+            observed["called"] = True
+            observed["body"] = (await receive()).get("body")
+
+        guard = RegistrationGuard(registered)
+        request_body = ("{\"redirect_uris\":[\"" + uri + "\"]}").encode()
+        delivered = False
+
+        async def receive():
+            nonlocal delivered
+            if not delivered:
+                delivered = True
+                return {"type": "http.request", "body": request_body,
+                        "more_body": False}
+            return {"type": "http.disconnect"}
+
+        async def send(message):
+            sent.append(message)
+
+        await guard({"type": "http", "method": "POST", "path": "/register"},
+                    receive, send)
+        return observed, sent, request_body
+
+    accepted, accepted_sent, original = asyncio.run(registration_case(
+        "https://chatgpt.com/connector_platform_oauth_redirect"))
+    check("registration guard replays accepted body unchanged",
+          accepted.get("called") and accepted.get("body") == original
+          and not accepted_sent)
+    rejected, rejected_sent, _ = asyncio.run(registration_case("javascript:alert(1)"))
+    check("registration guard returns OAuth 400 for unsafe callback",
+          not rejected.get("called") and rejected_sent
+          and rejected_sent[0].get("status") == 400)
 
     # --- TolerantGoogleProvider: client mismatch tolerated only with PKCE -----
     provider = TolerantGoogleProvider(

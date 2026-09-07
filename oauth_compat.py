@@ -21,8 +21,11 @@ any faculty member adding the server):
 Pinned to fastmcp==2.14.7 (requirements.txt): the tolerant override mirrors that
 version's storage internals.
 """
+import ipaddress
+import json
 import logging
 import time
+from urllib.parse import parse_qsl, urlencode, urlsplit
 
 from fastmcp.server.auth.providers.google import GoogleProvider
 from mcp.server.auth.provider import AuthorizationCode
@@ -30,6 +33,131 @@ from mcp.shared.auth import OAuthClientInformationFull
 from pydantic import AnyUrl
 
 log = logging.getLogger("moodle-mcp.oauth_compat")
+
+# The Google provider only accepts the fully-qualified userinfo scope URLs; a client
+# that requests the short OIDC names 'email' / 'profile' is rejected at DCR ("scopes
+# are not valid") and at /authorize ("client was not registered with scope email").
+# Codex uses the server-advertised scopes so it's unaffected, but any client that
+# sends the short names would fail. Normalize them to the full URLs at the edge so
+# every client works, whichever form it sends. 'openid' is already accepted as-is.
+_SCOPE_ALIASES = {
+    "email": "https://www.googleapis.com/auth/userinfo.email",
+    "profile": "https://www.googleapis.com/auth/userinfo.profile",
+}
+# Endpoints that carry a `scope`: /authorize (query), /register + /token (body).
+_SCOPE_PATHS = ("/authorize", "/register", "/token")
+
+
+def _safe_redirect_uri(uri: object) -> bool:
+    """Allow browser HTTPS callbacks and native-client loopback HTTP only.
+
+    Dynamic client registration is public by design, so accepting active-content
+    schemes such as ``javascript:`` would let an untrusted registrant turn the
+    post-consent redirect into script execution. Codex and the supported hosted
+    clients use HTTPS; local/native clients use an ephemeral loopback listener.
+    """
+    if not isinstance(uri, str) or not uri or len(uri) > 2048:
+        return False
+    if any(ch.isspace() for ch in uri):
+        return False
+    try:
+        parsed = urlsplit(uri)
+        # Accessing port performs its own range/format validation.
+        _ = parsed.port
+    except ValueError:
+        return False
+    if parsed.fragment or parsed.username is not None or parsed.password is not None:
+        return False
+    host = parsed.hostname
+    if parsed.scheme == "https":
+        return bool(host)
+    if parsed.scheme != "http" or not host:
+        return False
+    if host.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+class RegistrationGuard:
+    """Reject unsafe OAuth redirect URIs before FastMCP persists a DCR client.
+
+    The request body is replayed byte-for-byte for accepted registrations. Other
+    paths and methods are untouched. Malformed registration documents are left to
+    FastMCP's RFC-aware validator; this layer owns only the security boundary for
+    callback URI schemes and hosts.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if (scope.get("type") != "http" or scope.get("path") != "/register"
+                or scope.get("method") != "POST"):
+            return await self.app(scope, receive, send)
+
+        upstream_receive = receive
+        messages = []
+        body = b""
+        while True:
+            message = await upstream_receive()
+            messages.append(message)
+            if message.get("type") != "http.request":
+                break
+            body += message.get("body", b"")
+            if not message.get("more_body"):
+                break
+
+        try:
+            document = json.loads(body or b"{}")
+            redirects = document.get("redirect_uris") if isinstance(document, dict) else None
+            if (redirects is not None
+                    and (not isinstance(redirects, list) or not redirects
+                         or not all(_safe_redirect_uri(uri) for uri in redirects))):
+                return await self._reject(send)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            pass
+
+        index = 0
+
+        async def replay_receive():
+            nonlocal index
+            if index < len(messages):
+                message = messages[index]
+                index += 1
+                return message
+            return await upstream_receive()
+
+        return await self.app(scope, replay_receive, send)
+
+    @staticmethod
+    async def _reject(send):
+        body = json.dumps({
+            "error": "invalid_client_metadata",
+            "error_description": (
+                "redirect_uris must use HTTPS, or HTTP on a loopback host"
+            ),
+        }).encode()
+        await send({
+            "type": "http.response.start",
+            "status": 400,
+            "headers": [
+                (b"content-type", b"application/json"),
+                (b"cache-control", b"no-store"),
+                (b"content-length", str(len(body)).encode()),
+            ],
+        })
+        await send({"type": "http.response.body", "body": body})
+
+
+def _normalize_scope(scope: str) -> str:
+    """Rewrite short OIDC scope names to the full Google URLs; leave everything else
+    (openid, already-full URLs, unknown scopes) untouched. Order/dupes preserved."""
+    if not scope or not scope.strip():
+        return scope
+    return " ".join(_SCOPE_ALIASES.get(tok, tok) for tok in scope.split())
 
 # Exact-path rewrites applied before routing. Kept deliberately tiny and explicit.
 PATH_ALIASES = {
@@ -58,6 +186,99 @@ class PathAliases:
                 scope["path"] = target
                 scope["raw_path"] = target.encode()
         return await self.app(scope, receive, send)
+
+
+class ScopeNormalizer:
+    """ASGI wrapper: rewrite short OIDC scope names ('email'/'profile') to the full
+    Google scope URLs on the OAuth endpoints, before FastMCP validates them — so a
+    client that sends the short names is accepted instead of rejected. Touches only
+    /authorize (query string) and /register + /token (request body); every other
+    request passes straight through. Fail-open: any parse error leaves the request
+    untouched so the OAuth flow is never broken by this hook."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http" or scope.get("path", "") not in _SCOPE_PATHS:
+            return await self.app(scope, receive, send)
+
+        # /authorize carries scope in the query string (GET) — rewrite in place.
+        if scope.get("method") == "GET":
+            try:
+                qs = scope.get("query_string", b"").decode()
+                if "scope=" in qs:
+                    pairs = parse_qsl(qs, keep_blank_values=True)
+                    new = [(k, _normalize_scope(v) if k == "scope" else v) for k, v in pairs]
+                    if new != pairs:
+                        scope = dict(scope)
+                        scope["query_string"] = urlencode(new).encode()
+            except Exception:  # noqa: BLE001 — never break the flow
+                log.warning("scope query normalize skipped", exc_info=True)
+            return await self.app(scope, receive, send)
+
+        # /register (JSON) and /token (form) carry scope in the body — buffer, rewrite,
+        # replay with a corrected Content-Length.
+        if scope.get("method") == "POST":
+            upstream_receive = receive
+            body = b""
+            while True:
+                msg = await upstream_receive()
+                body += msg.get("body", b"")
+                if not msg.get("more_body"):
+                    break
+            try:
+                new_body = self._rewrite_body(scope, body)
+            except Exception:  # noqa: BLE001 — never break the flow
+                log.warning("scope body normalize skipped", exc_info=True)
+                # The upstream receive stream has already been consumed. Replaying
+                # the original bytes is the actual fail-open behavior; forwarding
+                # the exhausted receive callable would turn a harmless malformed
+                # body into a disconnect/hang in the OAuth endpoint.
+                new_body = body
+            if new_body != body:
+                headers = [(k, v) for k, v in scope.get("headers", [])
+                           if k.lower() != b"content-length"]
+                headers.append((b"content-length", str(len(new_body)).encode()))
+                scope = dict(scope)
+                scope["headers"] = headers
+            replayed = False
+
+            async def _receive():
+                nonlocal replayed
+                if not replayed:
+                    replayed = True
+                    return {"type": "http.request", "body": new_body, "more_body": False}
+                return await upstream_receive()
+
+            return await self.app(scope, _receive, send)
+
+        return await self.app(scope, receive, send)
+
+    @staticmethod
+    def _rewrite_body(scope, body: bytes) -> bytes:
+        ct = b""
+        for k, v in scope.get("headers", []):
+            if k.lower() == b"content-type":
+                ct = v.lower()
+                break
+        if b"json" in ct:
+            try:
+                data = json.loads(body or b"{}")
+            except json.JSONDecodeError:
+                return body
+            if not isinstance(data, dict):
+                return body
+            if isinstance(data.get("scope"), str):
+                fixed = _normalize_scope(data["scope"])
+                if fixed != data["scope"]:
+                    data["scope"] = fixed
+                    return json.dumps(data).encode()
+            return body
+        # default: form-encoded (application/x-www-form-urlencoded)
+        pairs = parse_qsl(body.decode(), keep_blank_values=True)
+        new = [(k, _normalize_scope(v) if k == "scope" else v) for k, v in pairs]
+        return urlencode(new).encode() if new != pairs else body
 
 
 class TolerantGoogleProvider(GoogleProvider):

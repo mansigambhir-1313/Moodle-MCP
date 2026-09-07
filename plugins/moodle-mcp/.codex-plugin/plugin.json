@@ -1,0 +1,38 @@
+{
+  "name": "moodle-mcp",
+  "version": "1.0.0",
+  "description": "Campus-scoped Moodle performance data and report generation for Jaipuria faculty.",
+  "author": {
+    "name": "Jaipuria AI Labs",
+    "url": "https://tryrehearsal.ai"
+  },
+  "homepage": "https://moodle-mcp.tryrehearsal.ai",
+  "repository": "https://github.com/mansigambhir-1313/Moodle-MCP",
+  "keywords": [
+    "moodle",
+    "education",
+    "faculty",
+    "analytics",
+    "mcp"
+  ],
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Moodle Faculty Analytics",
+    "shortDescription": "Secure Moodle analytics for Jaipuria faculty",
+    "longDescription": "Query campus-scoped student marks, attendance, cohort analytics, risk signals, report accuracy, and on-demand student reports through the deployed Moodle MCP server.",
+    "developerName": "Jaipuria AI Labs",
+    "category": "Education",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "websiteURL": "https://moodle-mcp.tryrehearsal.ai",
+    "defaultPrompt": [
+      "Show the cohort pulse for my campus.",
+      "Find students whose performance is declining.",
+      "Build an intervention watchlist for my cohort."
+    ],
+    "brandColor": "#8B5CF6"
+  }
+}

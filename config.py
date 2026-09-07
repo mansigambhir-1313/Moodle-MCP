@@ -38,8 +38,9 @@ class Settings(BaseSettings):
     oauth_allowed_domains_raw: str = Field(default="jaipuria.ac.in",
                                            alias="OAUTH_ALLOWED_DOMAINS")
     # Campus grant for a verified sign-in not listed in MCP_FACULTY:
-    # "all" (default) = every campus; "none" = deny unless listed; or a JSON list.
-    oauth_default_campuses_raw: str = Field(default="all", alias="OAUTH_DEFAULT_CAMPUSES")
+    # "none" (default) = deny unless listed; "all" = every campus; or a JSON list.
+    # Default-deny matters because faculty and students share the Workspace domain.
+    oauth_default_campuses_raw: str = Field(default="none", alias="OAUTH_DEFAULT_CAMPUSES")
     # Optional per-email overrides: JSON map email -> {name?, campuses} (null = all).
     mcp_faculty_raw: str = Field(default="", alias="MCP_FACULTY")
     # Optional stable key so issued OAuth tokens survive a restart/redeploy.
@@ -114,13 +115,16 @@ class Settings(BaseSettings):
         """Default grant for a domain-verified email with no MCP_FACULTY entry.
         Returns None (all campuses), a list, or the sentinel string 'deny'."""
         raw = self.oauth_default_campuses_raw.strip()
-        if raw.lower() in ("", "all", "null"):
+        if raw.lower() in ("all", "null"):
             return None
-        if raw.lower() == "none":
+        if raw.lower() in ("", "none"):
             return "deny"
         try:
             parsed = json.loads(raw)
-            return parsed if isinstance(parsed, list) else "deny"
+            if isinstance(parsed, list) and all(
+                    isinstance(campus, str) and campus.strip() for campus in parsed):
+                return list(dict.fromkeys(campus.strip().lower() for campus in parsed))
+            return "deny"
         except json.JSONDecodeError:
             return "deny"
 
@@ -136,6 +140,14 @@ def _valid_expires(exp) -> bool:
         return True
     except Exception:
         return False
+
+
+def _valid_campuses(campuses) -> bool:
+    """A campus grant is either explicit all (None) or a list of non-empty names."""
+    return campuses is None or (
+        isinstance(campuses, list)
+        and all(isinstance(campus, str) and campus.strip() for campus in campuses)
+    )
 
 
 def key_role(key: str) -> str | None:
@@ -173,8 +185,9 @@ def validate_config() -> None:
             if not isinstance(pr, dict) or "campuses" not in pr:
                 raise RuntimeError("each MCP_TOKENS entry must be an object with a 'campuses' key")
             campuses = pr.get("campuses")
-            if not (campuses is None or isinstance(campuses, list)):
-                raise RuntimeError("MCP_TOKENS 'campuses' must be null (all) or a list of campuses")
+            if not _valid_campuses(campuses):
+                raise RuntimeError("MCP_TOKENS 'campuses' must be null (all) or a list "
+                                   "of non-empty campus names")
             if len(tok) < 24 and not settings.allow_weak_tokens:
                 raise RuntimeError("an MCP token is short (<24 chars) — use "
                                    "`secrets.token_urlsafe(24)`, or set ALLOW_WEAK_TOKENS=true")
@@ -221,15 +234,29 @@ def validate_config() -> None:
             for email, pr in parsed.items():
                 if not isinstance(pr, dict):
                     raise RuntimeError("each MCP_FACULTY entry must be an object")
+                if "campuses" not in pr:
+                    raise RuntimeError("each MCP_FACULTY entry must include a 'campuses' key; "
+                                       "use null only for an intentional all-campus grant")
                 campuses = pr.get("campuses")
-                if not (campuses is None or isinstance(campuses, list)):
-                    raise RuntimeError("MCP_FACULTY 'campuses' must be null (all) "
-                                       "or a list of campuses")
+                if not _valid_campuses(campuses):
+                    raise RuntimeError("MCP_FACULTY 'campuses' must be null (all) or a list "
+                                       "of non-empty campus names")
+        raw_default = settings.oauth_default_campuses_raw.strip()
+        if raw_default.lower() not in ("", "all", "null", "none"):
+            try:
+                parsed_default = json.loads(raw_default)
+            except json.JSONDecodeError as e:
+                raise RuntimeError("OAUTH_DEFAULT_CAMPUSES must be 'none', 'all', or a JSON "
+                                   "list of campus names") from e
+            if not isinstance(parsed_default, list) or not _valid_campuses(parsed_default):
+                raise RuntimeError("OAUTH_DEFAULT_CAMPUSES must be 'none', 'all', or a JSON "
+                                   "list of non-empty campus names")
         if settings.oauth_default_campuses() is None and not settings.faculty():
             log.warning(
                 "OAUTH_DEFAULT_CAMPUSES is 'all' and MCP_FACULTY is empty — EVERY verified "
-                "%s Google account (including students or alumni, if they hold domain "
-                "accounts) can read every campus's marks and attendance. For faculty-only "
+                "%s Google account not found in the student roster (including alumni or "
+                "other non-faculty accounts) can read every campus's marks and attendance. "
+                "For faculty-only "
                 "access set OAUTH_DEFAULT_CAMPUSES=none and list faculty in MCP_FACULTY.",
                 ", ".join(settings.oauth_allowed_domains()))
         if not settings.oauth_jwt_signing_key:

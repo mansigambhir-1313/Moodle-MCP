@@ -13,6 +13,7 @@ from fastmcp.client.transports import StreamableHttpTransport
 
 URL = os.environ.get("MCP_URL", "http://localhost:8899/mcp")
 TOKEN = os.environ.get("MCP_TOKEN", "")
+SMOKE_ONLY = os.environ.get("MCP_SMOKE_ONLY", "").strip().lower() in ("1", "true", "yes")
 
 
 async def main():
@@ -24,6 +25,12 @@ async def main():
 
         who = await client.call_tool("whoami", {})
         print("\nwhoami ->", who.data)
+
+        # Container/CI smoke tests use dummy database credentials. Handshake,
+        # tools/list, and whoami exercise the MCP/auth wiring without making a
+        # PostgREST request to a real student-data project.
+        if SMOKE_ONLY:
+            return
 
         scope = {"campus": "jaipur", "batch": "2024-26", "trimester": "5"}
 

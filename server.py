@@ -1,4 +1,4 @@
-"""Jaipuria Moodle Reports MCP — faculty-facing, read-only.
+"""Jaipuria Moodle Reports MCP — faculty-facing and campus-scoped.
 
 Exposes the generated student reports and deterministic cohort analytics from the
 student-report-system Supabase project. Every DB tool is SELECT-only
@@ -176,6 +176,17 @@ app.routes.insert(0, Route("/brand/logo.png", brand_logo, methods=["GET"]))
 # OAuth discovery document to its /mcp-scoped variant. See oauth_compat.PathAliases.
 from oauth_compat import PathAliases
 app = PathAliases(app)
+
+# Scope tolerance: accept the short OIDC names 'email'/'profile' (rewriting them to the
+# full Google scope URLs) on the OAuth endpoints, so a client that requests the short
+# names isn't rejected at DCR/authorize. See oauth_compat.ScopeNormalizer.
+from oauth_compat import RegistrationGuard, ScopeNormalizer
+app = ScopeNormalizer(app)
+
+# Dynamic registration is public, but callback metadata is not allowed to become
+# an active-content or remote cleartext redirect. HTTPS and native loopback HTTP
+# cover Codex, hosted connectors, and local clients. See oauth_compat.RegistrationGuard.
+app = RegistrationGuard(app)
 
 # Transport gate. Static-token mode: reject tokenless /mcp requests with a real 401 (blocks
 # unauthenticated tool enumeration) before JSON-RPC; /health stays open. OAuth mode: FastMCP's

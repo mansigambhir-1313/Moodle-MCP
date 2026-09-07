@@ -1,0 +1,25 @@
+name: live-smoke
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: moodle-mcp-live-smoke
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Check production discovery and auth boundary
+        run: python scripts/check_live_endpoint.py https://moodle-mcp.tryrehearsal.ai

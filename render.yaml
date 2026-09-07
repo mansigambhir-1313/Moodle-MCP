@@ -31,8 +31,7 @@ services:
       - key: MCP_IP_RATE_LIMIT
         value: "1200"
       # Fail-closed default: only emails listed in MCP_FACULTY get access. The code
-      # default is "all" for backwards compatibility, but "all" means every verified
-      # domain account (students included, if they hold accounts) reads every campus.
+      # code default is also "none"; keep this explicit so the deployed policy is visible.
       - key: OAUTH_DEFAULT_CAMPUSES
         value: none
       - key: MCP_FACULTY

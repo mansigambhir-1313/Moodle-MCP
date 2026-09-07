@@ -1,12 +1,12 @@
 # Jaipuria Moodle Reports MCP
 
-A **faculty-facing, read-only Model Context Protocol (MCP) server** that makes the Jaipuria
+A **faculty-facing, campus-scoped Model Context Protocol (MCP) server** that makes the Jaipuria
 `student-report-system` data queryable in plain language. Connect it to any MCP host (a dashboard,
-Claude.ai, ChatGPT, Claude CLI) and ask about student marks, attendance, subjects, cohort
+Codex, ChatGPT, Claude.ai, Claude CLI) and ask about student marks, attendance, subjects, cohort
 analytics, longitudinal trends, at-risk students, and report accuracy — every ingested student,
 scoped to the caller's campuses.
 
-**Live:** `https://moodle-mcp-f6do.onrender.com/mcp` · **Health:** `/health` · **Tools:** 27
+**Live:** `https://moodle-mcp.tryrehearsal.ai/mcp` · **Health:** `/health` · **Tools:** 26
 **Repo:** `github.com/mansigambhir-1313/Moodle-MCP` · **Owner:** Jaipuria AI Labs
 
 ---
@@ -16,11 +16,12 @@ scoped to the caller's campuses.
 The pipeline in [`moodle-agent`](../moodle-agent) ingests Moodle data, computes analytics, and
 generates validated student reports into a Supabase project. This MCP is the **read side** of that
 project for faculty and the programme office: it exposes the raw data and the pipeline's outputs as
-~27 structured, auto-approvable tools that a host LLM routes on.
+25 structured query tools plus one report-generation action that a host LLM routes on.
 
 It is **data-first** — the primary surface is the raw gradebook and attendance (queryable for
 *every* student, report or not); the generated reports and their two-scheme accuracy scores are a
-secondary layer. It is **read-only forever**: no tool writes, ingests, or emails.
+secondary layer. Data access is read-only; `create_report` is the sole action and delegates report
+generation to the authenticated agent service. This MCP never ingests or emails.
 
 Design lineage: the [Rehearsal MCP](https://github.com/JaipuriaAILabs/rehearsal-mcp) patterns
 (bounded caches, routing-contract docstrings, response budgets, secret stripping, graceful
@@ -32,7 +33,7 @@ faculty model**.
 - **Upstream:** the shared `student-report-system` Supabase project (tables `students`, `courses`,
   `enrolments`, `marks`, `attendance_sessions`, `student_reports`, `report_accuracy`), written by
   `moodle-agent`.
-- **Downstream:** any MCP host — a faculty dashboard, Claude.ai / ChatGPT connectors, Claude CLI.
+- **Downstream:** any MCP host — Codex, ChatGPT/Claude connectors, a faculty dashboard, or CLI.
 
 ---
 
@@ -50,10 +51,11 @@ faculty model**.
 
 ---
 
-## Tools (27)
+## Tools (26)
 
-Every tool is `SELECT`-only, campus-scoped to the caller's token, bounded, and carries a
-`WHAT / USE WHEN / DO NOT USE / RETURNS` routing docstring.
+Every data tool is `SELECT`-only, campus-scoped to the caller, bounded, and carries a
+`WHAT / USE WHEN / DO NOT USE / RETURNS` routing docstring. `create_report` is separately marked
+as a non-destructive write action.
 
 ### Students — raw data (primary)
 | Tool | What it returns |
@@ -80,6 +82,7 @@ Every tool is `SELECT`-only, campus-scoped to the caller's token, bounded, and c
 | `cohort_pulse` | One-call cohort KPIs: marks, attendance, pass rate, at-risk, distribution |
 | `watchlist` | Auto intervention list — reasons + suggested action, ranked |
 | `declining_students` | Cohort-wide biggest term-over-term mark drops (early warning) |
+| `campus_performance_report` | Cross-cohort campus KPIs, risks, and teaching signals |
 
 ### Analytics & at-risk (primary)
 | Tool | What it returns |
@@ -92,15 +95,17 @@ Every tool is `SELECT`-only, campus-scoped to the caller's token, bounded, and c
 | `attendance_watch` | Students below an attendance threshold |
 | `zero_alerts` | Students with a recorded zero (most urgent) |
 
-### Reports & accuracy (secondary)
+### Reports (secondary)
 | Tool | What it returns |
 |---|---|
-| `get_report_accuracy` | One report's two-scheme accuracy score + interpretation |
-| `accuracy_overview` | Cohort accuracy — mean %, verified / drift / flagged |
-| `flagged_reports` | The human-review queue (validation-flagged reports) |
 | `get_student_report` | The generated narrative report for a student |
-| `report_pipeline_status` | Ready / held / failed counts for a scope |
+| `report_data_availability` | Whether enough source data exists to generate a report |
 | `whoami` | The caller's principal and allowed campuses |
+
+### Action (write)
+| Tool | What it does |
+|---|---|
+| `create_report` | Delegates one on-demand report generation to the authenticated report service |
 
 See [`docs/INNOVATION_ROADMAP.md`](docs/INNOVATION_ROADMAP.md) for Phase-3 ideas
 (`attendance_eligibility`, `attendance_marks_link`, `anomalies`, `roster_health`).
@@ -109,9 +114,25 @@ See [`docs/INNOVATION_ROADMAP.md`](docs/INNOVATION_ROADMAP.md) for Phase-3 ideas
 
 ## Quickstart
 
-### Connect a host (deployed server)
+### Connect Codex (deployed server)
+
+This repository contains a managed Codex plugin bundle under `plugins/moodle-mcp`:
+`.codex-plugin/plugin.json` supplies presentation metadata and `.mcp.json` points at the production
+server. The checked-in `.agents/plugins/marketplace.json` exposes that bundle for a workspace admin
+to import from GitHub. Install `moodle-mcp`, start a new Codex desktop task, and complete the Google
+OAuth prompt. The server uses dynamic client registration and PKCE, so no static bearer token
+belongs in the plugin.
+
+Because the plugin declares `.mcp.json`, workspace distribution is desktop-only even though the
+server is remote HTTPS. See [`docs/TEAM_ROLLOUT.md`](docs/TEAM_ROLLOUT.md) for the admin import,
+pilot, release-gate, and rollback steps.
+
+See [`docs/CODEX_GAP_ANALYSIS.md`](docs/CODEX_GAP_ANALYSIS.md) for the compatibility and security
+review.
+
+### Connect a static-token host (legacy/non-OAuth deployment)
 ```bash
-claude mcp add moodle --transport http https://moodle-mcp-f6do.onrender.com/mcp \
+claude mcp add moodle --transport http https://moodle-mcp.tryrehearsal.ai/mcp \
   --header "Authorization: Bearer <your MCP_TOKENS value>"
 ```
 Then ask, in plain language:
@@ -175,21 +196,21 @@ python3 -c "import secrets; print('mcp_'+secrets.token_urlsafe(24))"   # one per
   "mcp_...office": {"name": "Programme Office",  "campuses": null}      // null = all campuses
 }
 ```
-The Supabase **service-role key stays server-side** and is never handed to the host. There is no
-write path in the codebase.
+The Supabase credential stays server-side and is never handed to the host. `create_report` does
+not write through that credential; it calls the separately authenticated report service.
 
 ---
 
 ## Architecture
 
 ```
-MCP host (dashboard / Claude / ChatGPT)
+MCP host (Codex / ChatGPT / Claude / dashboard)
         │  MCP over HTTP + Bearer <faculty token>
         ▼
 server.py (FastMCP /mcp, /health)
   get_authenticated_service()  → verify token → MoodleService(allowed_campuses)
         │
-  tools/* (6 modules, 27 tools) — each: Params model + _impl(svc,…) + register()
+  tools/* (7 modules, 26 tools) — each: Params model + _impl(svc,…) + register()
         │  every query .in_("campus", allowed) ; strip_secrets ; response budgets
         ▼
 Supabase (read service role) — students · courses · enrolments · marks ·
@@ -207,7 +228,7 @@ Full design: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 | `tools/common.py` | Shared helpers: `courses_for`, `marks_for`, `cohort_rollup`, caches |
 | `tools/students.py` · `subjects.py` · `insights.py` | Primary data tools |
 | `tools/analytics.py` · `at_risk.py` | Cohort rollups |
-| `tools/accuracy.py` · `reports.py` | Secondary report layer |
+| `tools/reports.py` · `actions.py` | Cached report reads + on-demand generation |
 | `cache.py` · `guardrails.py` · `annotations.py` | TTL cache, budgets/scoping, tool hints |
 | `test_client.py` | End-to-end MCP client smoke test |
 
@@ -228,7 +249,7 @@ rollups). Cohort tools page past PostgREST's 1000-row cap and cache the result f
 
 | Environment | URL | Notes |
 |---|---|---|
-| Production | `https://moodle-mcp-f6do.onrender.com` | Free instance, `main` auto-deploys |
+| Production | `https://moodle-mcp.tryrehearsal.ai` | Custom domain; `main` auto-deploys |
 | Local | `http://localhost:8899` | `uvicorn server:app --port 8899` |
 
 Full test/deploy steps: [`DEPLOY.md`](DEPLOY.md).
@@ -284,7 +305,8 @@ a JWT with `{"role":"reporting_readonly"}` signed with the project JWT secret an
 PostgREST then runs every query as a role that **physically cannot write**. The server logs a warning
 at boot whenever it detects a full `service_role` key still in use.
 
-**Data invariants:** read-only forever · campus-scope every query · uniform `{"found": false}`
+**Data invariants:** read-only data queries · one explicitly annotated report-generation action ·
+campus-scope every query · uniform `{"found": false}`
 misses (no existence oracle) · explicit field projections + secret stripping (run ids / storage
 keys / hashes / emails never leave the server) · service-role key server-side only · response
 budgets + paging · bounded caches only (OOM-safe). Detail in `docs/ARCHITECTURE.md` §3, §11.
