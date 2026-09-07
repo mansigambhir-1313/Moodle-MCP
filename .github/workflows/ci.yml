@@ -16,7 +16,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      FASTMCP_HOME: ${{ runner.temp }}/fastmcp
+      # runner.* is not available while GitHub validates job-level env.
+      FASTMCP_HOME: /tmp/moodle-fastmcp
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
