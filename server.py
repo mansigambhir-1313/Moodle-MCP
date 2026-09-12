@@ -201,5 +201,13 @@ app = TransportGuard(app, open_paths=("/health", "/brand/logo.png"),
                      maxkeys=settings.rate_limit_max_keys,
                      redis_url=settings.redis_url,
                      trust_proxy_headers=settings.trust_proxy_headers)
+# Bypass resistance (AIA-1013 #4): when GATEWAY_ENFORCED, /mcp only accepts requests
+# carrying the gateway's shared secret (i.e. only traffic routed through the MCP
+# gateway). Defaults OFF — inert. Health/brand/OAuth discovery stay open. OAuth is
+# unchanged; this is an additional gate. Inside HostGuard/SecurityHeaders so its 403
+# still gets those response headers.
+from gateway_trust import GatewayEnforce  # noqa: E402
+app = GatewayEnforce(app, enforced=settings.gateway_enforced,
+                     accepted_secrets=settings.gateway_secrets())
 app = HostGuard(app, allowed_hosts=settings.allowed_hosts())
 app = SecurityHeaders(app)

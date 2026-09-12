@@ -95,6 +95,14 @@ class Settings(BaseSettings):
     require_audit: bool = Field(default=False, alias="MCP_REQUIRE_AUDIT")
     # Reject access tokens shorter than this at boot (set ALLOW_WEAK_TOKENS to skip).
     allow_weak_tokens: bool = Field(default=False, alias="ALLOW_WEAK_TOKENS")
+    # Bypass resistance (AIA-1013 #4): when GATEWAY_ENFORCED, /mcp only accepts requests
+    # carrying the gateway's shared secret — reachable only THROUGH the MCP gateway.
+    # OAuth is unchanged (an additional gate). Defaults OFF — inert until cutover.
+    gateway_enforced: bool = Field(default=False, alias="GATEWAY_ENFORCED")
+    gateway_shared_secret: str = Field(default="", alias="GATEWAY_SHARED_SECRET")
+
+    def gateway_secrets(self) -> list[str]:
+        return [s.strip() for s in self.gateway_shared_secret.split(",") if s.strip()]
 
     def tokens(self) -> dict:
         """token -> {name, campuses(None=all)}. Admin token grants all campuses."""
