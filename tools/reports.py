@@ -23,7 +23,7 @@ class SearchParams(BaseModel):
 
 
 class ReportParams(BaseModel):
-    student_id: str = Field(description="enrolment id, e.g. 'JJ24PG099'", max_length=64)
+    student_id: str = Field(description="enrolment id OR student name — e.g. 'JJ24PG099' or 'Aashna Gupta'. A unique name resolves automatically; an ambiguous one returns candidates to choose from.", max_length=120)
     campus: str | None = Field(default=None, max_length=64)
     batch: str | None = Field(default=None, max_length=64)
     trimester: str | None = Field(default=None, max_length=8)

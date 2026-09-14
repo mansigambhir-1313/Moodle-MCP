@@ -52,12 +52,12 @@ class CreateReportParams(BaseModel):
     # only campus, and "any student" needs nothing.
     campus: str | None = Field(default=None, description="campus within your grant; omit to pick any granted campus with data", max_length=64)
     batch: str | None = Field(default=None, description="batch e.g. '2025-27'; omit for the campus's latest graded batch", max_length=64)
-    student_id: str | None = Field(default=None, description="enrolment id e.g. 'JN25PG067'; omit to pick a random student who has graded data", max_length=64)
+    student_id: str | None = Field(default=None, description="enrolment id OR student name — e.g. 'JN25PG067' or 'Aashna Gupta'; a unique name resolves automatically (ambiguous ones return candidates). Omit to pick a random student who has graded data.", max_length=120)
     trimester: str | None = Field(default=None, description="target trimester e.g. '3'; omit to auto-pick the latest trimester that has scored subjects for the student", max_length=4)
     refresh: bool = Field(default=False,
                           description="regenerate the insight instead of using the cache")
 
-    @field_validator("campus", "batch", "student_id")
+    @field_validator("campus", "batch")
     @classmethod
     def _plain_segment(cls, v, info):
         if v is None:
@@ -70,6 +70,18 @@ class CreateReportParams(BaseModel):
         if info.field_name == "campus":
             return v.lower()
         return v
+
+    @field_validator("student_id")
+    @classmethod
+    def _student_ref(cls, v):
+        """Accept an enrolment id OR a name. Keep only characters valid in either (letters,
+        digits, space, hyphen, dot, apostrophe) so the value can't break a query or URL; the
+        tool resolves it to the canonical id before anything reaches the agent."""
+        if v is None:
+            return None
+        v = " ".join(v.split())  # collapse/trim whitespace
+        v = "".join(ch for ch in v if ch.isalnum() or ch in " -.'").strip()
+        return v or None
 
     @field_validator("trimester")
     @classmethod
@@ -239,6 +251,20 @@ async def _create_impl(svc, p: CreateReportParams) -> dict:
                               random_gradeable_students, roster_member)
 
     campus, batch, student_id = p.campus, p.batch, p.student_id
+
+    # Accept a NAME or an enrolment id: resolve to the canonical id up front (campus-scoped;
+    # find_student raises a ToolError listing candidates if a name is ambiguous), and fill in
+    # campus/batch from the roster when omitted. Everything downstream uses the canonical id, so
+    # the strict-charset agent URL only ever sees a real enrolment id.
+    if student_id:
+        loc = find_student(svc, student_id)
+        if loc is None:
+            return {"found": False,
+                    "note": (f"'{student_id}' was not found in any campus you can access — "
+                             "check the name or enrolment id.")}
+        student_id = loc["student_id"]
+        campus = campus or loc["campus"]
+        batch = batch or loc["batch"]
 
     # --- AUTO-SELECT: any part omitted -> pick a real graded target and GENERATE.
     # A student can have marks yet no scored subjects in the batch's in-progress

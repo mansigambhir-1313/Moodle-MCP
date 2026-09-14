@@ -12,7 +12,7 @@ from tools.common import (attendance_for, attendance_pct, cohort_rollup,
 
 
 class StudentParams(BaseModel):
-    student_id: str = Field(description="enrolment id, e.g. 'JJ24PG099'", max_length=64)
+    student_id: str = Field(description="enrolment id OR student name — e.g. 'JJ24PG099' or 'Aashna Gupta'. A unique name resolves automatically; an ambiguous one returns candidates to choose from.", max_length=120)
 
 
 class ScopeParams(BaseModel):

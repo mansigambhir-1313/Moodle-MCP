@@ -2,6 +2,8 @@
 Moodle tables (students, courses, enrolments, marks, attendance_sessions); the generated report
 is a secondary layer. (The report-QA/accuracy layer is intentionally NOT exposed here.)"""
 
+from fastmcp.exceptions import ToolError
+
 CATALOG = "student_reports"
 MARKS = "marks"
 ATTENDANCE = "attendance_sessions"
@@ -55,13 +57,53 @@ def courses_for(svc, run_id, trimester=None) -> dict:
 
 
 def find_student(svc, student_id):
-    """Locate a student in the roster within the caller's campus scope. Returns the row
+    """Locate a student in the roster within the caller's campus scope, by enrolment id OR name —
+    so callers can pass 'JN25MM002' or 'Aashna Gupta' interchangeably. Returns the row
     (campus, batch, student_name) or None. Uses the students table, so it covers EVERY ingested
-    student — not only those with a generated report."""
-    q = svc.client.table("students").select("student_id,student_name,campus,batch,section_group")
-    q = svc.apply_campus(q, requested=None)
-    rows = (q.eq("student_id", student_id).limit(1).execute()).data or []
-    return rows[0] if rows else None
+    student — not only those with a generated report. Always campus-scoped: a name never resolves
+    a student outside the caller's grant. When a name/fragment matches several students it raises a
+    ToolError listing the candidates (with ids) so the caller can disambiguate — never guesses."""
+    query = (student_id or "").strip()
+    if not query:
+        return None
+
+    def _roster():
+        q = svc.client.table("students").select("student_id,student_name,campus,batch,section_group")
+        return svc.apply_campus(q, requested=None)
+
+    # 1) Exact enrolment id — fast and unambiguous.
+    rows = (_roster().eq("student_id", query).limit(1).execute()).data or []
+    if rows:
+        return rows[0]
+
+    # 2) Name / id fragment, case-insensitive, still campus-scoped. Sanitised so it can't break
+    #    the PostgREST or-filter (keep letters/digits/space/hyphen only; `*` = ilike wildcard).
+    frag = "".join(ch for ch in query if ch.isalnum() or ch in " -").strip()
+    if not frag:
+        return None
+    # Join tokens with the ilike wildcard so "Aashna Gupta" matches "AASHNA  GUPTA" — the roster
+    # names carry inconsistent internal spacing, which a literal-space pattern would miss.
+    pat = "*" + "*".join(frag.split()) + "*"
+    matches = (_roster().or_(f"student_name.ilike.{pat},student_id.ilike.{pat}")
+               .limit(25).execute()).data or []
+    uniq = {}
+    for r in matches:                                   # students table is per-run; dedupe by id
+        uniq.setdefault(r["student_id"], r)
+    cands = list(uniq.values())
+    if len(cands) == 1:
+        return cands[0]
+    if not cands:
+        return None
+    # A full-name match wins even if the fragment also appears in other names (whitespace-normalised
+    # so the double-spaced roster names compare equal to a single-spaced query).
+    norm = " ".join(frag.split()).lower()
+    exact = [r for r in cands if " ".join((r.get("student_name") or "").split()).lower() == norm]
+    if len(exact) == 1:
+        return exact[0]
+    listing = "; ".join(f"{r.get('student_name')} ({r['student_id']}, {r['campus']}/{r['batch']})"
+                        for r in sorted(cands, key=lambda r: r.get("student_name") or "")[:10])
+    raise ToolError(f"Multiple students match '{query}'. Re-run with the exact enrolment id — "
+                    f"candidates: {listing}")
 
 
 def roster_member(svc, student_id, campus, batch):
