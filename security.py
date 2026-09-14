@@ -94,18 +94,12 @@ def bearer_of(headers: dict) -> str:
 
 # --- OAuth (Google sign-in) principal resolution -----------------------------
 def principal_from_claims(claims: dict):
-    """Verified Google claims -> campus-scoped principal, or None (fail-closed).
-    Gate 1: email present and verified. Gate 2: domain in OAUTH_ALLOWED_DOMAINS
-    (jaipuria.ac.in). Grant order (first match wins):
-      1. MCP_FACULTY env override — deploy-time break-glass, admin-controlled;
-      2. student-roster HARD DENY — 3,144 students share the Google domain, and
-         data (the roster) must never be able to lock out the env-listed admin,
-         which is why the env override is checked first;
-      3. mcp_faculty DB registry row (scales to ~500 faculty, no redeploys);
-      4. OAUTH_DEFAULT_CAMPUSES ('none' in production -> deny)."""
+    """Verified Jaipuria Google accounts receive all-campus access.
+    Other domains still follow the explicit-override, student-roster,
+    registry, and configured-default policy."""
     from config import settings
     email = str(claims.get("email") or "").strip().lower()
-    if not email or "@" not in email:
+    if email.count("@") != 1:
         return None
     verified = claims.get("email_verified")
     if verified is None:  # Google userinfo v2 spells it verified_email
@@ -116,6 +110,13 @@ def principal_from_claims(claims: dict):
         return None
     domain = email.rsplit("@", 1)[1]
 
+    # Every verified Jaipuria ID can use every MCP tool across campuses, including
+    # accounts present in the student roster. Apply this before the old per-person
+    # grants so an existing scoped row or OAUTH_DEFAULT_CAMPUSES=none cannot block it.
+    if domain == "jaipuria.ac.in" or domain.endswith(".jaipuria.ac.in"):
+        return {"name": claims.get("name") or email, "email": email,
+                "campuses": None}
+
     # 1. Env override (admin break-glass) — an EXPLICITLY listed email is allowed
     #    regardless of domain (so a named external guest, e.g. a VC's gmail, can be
     #    granted without opening the domain gate to the whole world).
@@ -124,12 +125,12 @@ def principal_from_claims(claims: dict):
         return {"name": override.get("name") or claims.get("name") or email,
                 "email": email, "campuses": override.get("campuses")}
 
-    # 2. Student-roster HARD DENY — always, before any grant.
+    # 2. Legacy student-roster deny for non-Jaipuria accounts only.
     import faculty as registry
     if registry.is_student(email):
         return None
 
-    # 3. mcp_faculty DB row — also an EXPLICIT allowlist, so a listed external email
+    # 3. mcp_faculty DB row — an EXPLICIT allowlist for external email
     #    (any domain, e.g. a specific VC gmail) is granted without the domain gate.
     #    Writes to this table are service-role only, so it is admin-controlled.
     grant = registry.faculty_grant(email)
