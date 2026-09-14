@@ -355,27 +355,28 @@ def register(mcp, get_service):
     @mcp.tool(title="Create Student Report", annotations=GENERATE_ANNOTATIONS)
     async def create_report(params: CreateReportParams) -> dict:
         """
-        WHAT: Queue generation (or refresh) of one student's report. The initial response
-        returns a request_id; call get_report_job with that id until it is completed, then the
-        completed response contains the validated narrative, per-subject numbers, and a
-        shareable expiring link to the interactive page.
-        ALL PARAMETERS ARE OPTIONAL. Omit student_id to have a random student WITH graded data
-        picked for you; omit batch for the campus's latest graded batch; omit campus for any
-        campus in your grant that has data. So 'a report for any student in noida' -> pass
-        campus="noida" only; 'a report for any student' -> pass nothing. When only student_id
-        is given, the tool finds that student's own campus/batch automatically — you do NOT
-        need to know their campus. Omit trimester to auto-pick the latest trimester that has
-        scored subjects (so a student mid-trimester still reports on their last graded one);
-        pass trimester (e.g. '3') only to force a specific one. When a student is auto-picked
-        the response sets auto_selected:true — tell the user which student (name + id) you
-        generated for.
-        USE WHEN they say: 'create/generate the report for <id>', 'report for any/a random
-        student [in <campus>]', 'make a fresh report', 'get me a link I can share'.
-        DO NOT USE WHEN they only want raw data (use get_student / student_marks) or the
-        cached narrative without generating (use get_student_report). Never emails anyone.
-        RETURNS: queued:true + request_id for the durable job. get_report_job returns status and,
-        once completed, campus, batch, name, narrative, subject_table, attendance/CE %, and the
-        exact report_url. found:false with a note if there is no graded data to build from.
+        Prepare a student's report. CALL THIS TOOL DIRECTLY whenever a report is asked for —
+        "prepare/create/generate/make a report for <student>", "give me <name>'s report",
+        "a report for any student [in <campus>]", "get me a shareable link". Do NOT ask the user
+        whether to run it first, and do NOT hand-assemble a substitute from the raw tools
+        (get_student / student_marks) — THIS tool is the report. It is safe: non-destructive,
+        idempotent, and never emails anyone.
+        RETURNS (default, synchronous): the finished report INLINE — found/generated, the headline
+        narrative, per-subject numbers (subject_table), attendance & CE %, and a shareable expiring
+        report_url. Render it in full for the user. (Only if the async queue is enabled does it
+        instead return queued:true + request_id — then poll get_report_job until completed.)
+        found:false with a note when there is no graded data to build from.
+        ALL PARAMETERS ARE OPTIONAL. student_id accepts an enrolment id OR a student name (a unique
+        name resolves automatically; an ambiguous one returns candidates to choose from). Omit
+        student_id for a random student WITH graded data; omit batch for the campus's latest graded
+        batch; omit campus for any campus in your grant with data — so 'a report for any student in
+        noida' -> pass campus="noida" only; 'a report for any student' -> pass nothing. When only a
+        student_id/name is given, the tool finds that student's own campus/batch automatically.
+        Omit trimester to auto-pick the latest trimester with scored subjects; pass it (e.g. '3')
+        to force one. When a student is auto-picked the response sets auto_selected:true — tell the
+        user which student (name + id) you generated for.
+        DO NOT USE only when they want raw data (get_student / student_marks) or the cached
+        narrative without regenerating (get_student_report).
         """
         return await _create_impl(await get_service(), params)
 

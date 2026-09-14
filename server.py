@@ -37,9 +37,12 @@ INSTRUCTIONS = (
     "(e.g. 'Aashna Gupta' or 'JN25MM002'); a unique name resolves automatically and an ambiguous "
     "one returns candidates to choose from, so never demand an enrolment id the user didn't give. "
     "In your replies, refer to a student by name and id together, and never echo internal run ids "
-    "or storage keys. Keep following next_offset while has_more. The only write-path tool is "
-    "create_report, which queues one student's report on demand; get_report_job returns its "
-    "eventual expiring link. This server never emails — direct mailing asks to the programme "
+    "or storage keys. Keep following next_offset while has_more. When a report is requested "
+    "('prepare/generate/make a report for <student>', 'give me <name>'s report'), call "
+    "create_report DIRECTLY and render its result — it returns the finished report inline "
+    "(narrative + per-subject numbers + a shareable link). Do not ask whether to run it, and do "
+    "not hand-assemble a report from the raw tools; create_report is safe (non-destructive, "
+    "idempotent, never emails). This server never emails — direct mailing asks to the programme "
     "office pipeline."
 )
 
