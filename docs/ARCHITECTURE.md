@@ -1,16 +1,16 @@
 # Jaipuria Moodle MCP — Technical Architecture
 
-> Deep-dive reference for the **faculty-facing, campus-scoped** Moodle Reports MCP server.
+> Deep-dive reference for the **Jaipuria-account-accessible** Moodle Reports MCP server.
 > Exposes student performance data and deterministic cohort analytics through 26 query/status tools, plus
 > one explicitly annotated action for on-demand report generation.
 > Design lineage: the Rehearsal MCP (read-only, bounded, routing-contract tools) — adapted from a
-> per-student RLS model to a **role-based, campus-scoped faculty model**.
+> per-student RLS model to institutional data access for verified Jaipuria IDs.
 
 ## 1. System context
 
 The server sits between an MCP host (Codex, ChatGPT, Claude, a faculty dashboard, or CLI) and the
 `student-report-system/1.0.0` Supabase project. Query tools return structured rows scoped to the
-faculty caller's allowed campuses; the host LLM frames and summarises the results.
+caller's allowed campuses (all for Jaipuria IDs); the host LLM frames and summarises the results.
 
 ```mermaid
 flowchart LR
@@ -57,17 +57,17 @@ It is not a generic table browser. It exposes three things no raw DB view gives 
 3. **Early-warning analytics** — `at_risk_students`, `attendance_watch`, `zero_alerts` turn raw
    marks/attendance into the exact triage a programme office acts on.
 
-## 3. Tenant-isolation model (role-based, campus-scoped)
+## 3. Access model
 
-Unlike the student MCP (per-user RLS on `auth.uid()`), this server serves faculty who see
-*institutional* data for their campuses. Boundaries:
+Unlike the student MCP (per-user RLS on `auth.uid()`), this server exposes institutional
+data to every verified Jaipuria Google account. Boundaries:
 
 1. **Bearer access gate** — production uses Google OAuth through FastMCP; static deployments may
-   use `MCP_TOKENS`. Verified Google identities are mapped through explicit `MCP_FACULTY` or
-   `mcp_faculty` grants. No valid grant means deny.
+   use `MCP_TOKENS`. Verified Jaipuria IDs receive all-campus access, including accounts in the
+   student roster. External accounts still require an explicit `MCP_FACULTY` or `mcp_faculty` grant.
 2. **Server-side scoping** — every tool applies `.in_("campus", allowed_campuses)` (or `.eq` for a
-   single-campus token). A caller can never widen scope by passing a campus they aren't granted;
-   requested campus is intersected with the granted set.
+   single-campus token) when the grant is scoped. Jaipuria IDs have no campus restriction;
+   static tokens and external grants intersect requested campuses with their allowed set.
 3. **Read-only query credential** — the Supabase data credential lives only server-side. Query
    tools are `SELECT`-only. The one action calls `moodle-agent` with separate server credentials.
 4. **Secret stripping** — `strip_secrets()` removes storage object keys, raw tokens, and internal
@@ -145,14 +145,14 @@ Token discipline is a contract (shared constants in `guardrails.py`):
 | `_run_cache` | `TTLCache(64 × 300s)` | latest `final` run_id per (campus,batch) |
 | `_rollup_cache` | `TTLCache(8 × 300s)` | per-run aggregate rollups |
 | `_marks_cache` | `TTLCache(8 × 300s)` | bounded raw-mark pages used by rollups |
-| `_grants` / `_students` | bounded TTL caches | faculty grants and student hard-deny lookups |
+| `_grants` / `_students` | bounded TTL caches | external grants and roster checks |
 
 ## 9. Configuration (`config.py`)
 
 | Group | Vars |
 |---|---|
 | Supabase | `SUPABASE_URL`, split data/OAuth/audit JWTs, `SUPABASE_ANON_KEY` |
-| Access | Google OAuth + explicit faculty registry; static fallback via `MCP_TOKENS` / `MCP_ADMIN_TOKEN` |
+| Access | Jaipuria Google OAuth all-campus access; explicit external grants; static fallback via `MCP_TOKENS` / `MCP_ADMIN_TOKEN` |
 | Identity | `MCP_SERVER_NAME`, `MCP_SERVER_VERSION`, `MCP_SERVER_BASE_URL` |
 | Reports | `REPORT_PUBLIC_BASE_URL` (for `get_student_report` links), `STORAGE_BUCKET` |
 

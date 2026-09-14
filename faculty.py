@@ -1,16 +1,12 @@
-"""DB-backed faculty access registry (table: mcp_faculty).
+"""DB-backed grants for non-Jaipuria OAuth accounts (table: mcp_faculty).
 
-Why a table and not the MCP_FACULTY env var: ~500 faculty with per-campus scopes
-don't fit an env var, and the roster changes without redeploys. The env var stays
-as a break-glass ADMIN override (checked before this module — see
-security.principal_from_claims), so a bad DB row or an outage can never lock the
-administrator out.
+Verified Jaipuria accounts now receive all-campus access directly in
+security.principal_from_claims. This registry remains for explicitly granted
+external accounts, with the MCP_FACULTY env var as a break-glass override.
 
 Threat model notes:
-* 3,144 STUDENTS share the @jaipuria.ac.in Google domain, so the domain gate can
-  never grant anything by itself. Every grant must be explicit, and any email
-  found in the student roster is HARD-DENIED here even if someone mistakenly
-  inserts it into mcp_faculty.
+* Jaipuria accounts, including students, do not consult this registry. The
+  student-roster deny only applies to external accounts using explicit grants.
 * Everything fails CLOSED: a DB error, a malformed row, an inactive row, or an
   unparseable campuses value all resolve to "no access" (with a stale-cache
   grace for transient DB blips, so a 2-second Supabase hiccup doesn't kick out

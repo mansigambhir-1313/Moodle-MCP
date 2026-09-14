@@ -291,18 +291,22 @@ def phase5_oauth_signin():
 
     p = principal_from_claims({"email": "Prof@Jaipuria.ac.in", "email_verified": True,
                                "name": "Prof"})
-    check("unlisted domain user denied by the secure default", p is None)
+    check("unlisted Jaipuria ID allowed with default none",
+          p is not None and p["campuses"] is None)
 
     reload_with(OAUTH_DEFAULT_CAMPUSES="all")
     p = principal_from_claims({"email": "Prof@Jaipuria.ac.in", "email_verified": True,
                                "name": "Prof"})
     check("jaipuria.ac.in email accepted (case-insensitive)",
           p is not None and p["email"] == "prof@jaipuria.ac.in")
-    check("explicit all-campus default applies", p is not None and p["campuses"] is None)
+    check("Jaipuria ID has all-campus access", p is not None and p["campuses"] is None)
     check("outside domain rejected",
           principal_from_claims({"email": "x@gmail.com", "email_verified": True}) is None)
     check("missing email rejected",
           principal_from_claims({"name": "X", "email_verified": True}) is None)
+    check("malformed email rejected",
+          principal_from_claims({"email": "x@evil@jaipuria.ac.in",
+                                 "email_verified": True}) is None)
     check("missing verification claim rejected",
           principal_from_claims({"email": "p@jaipuria.ac.in"}) is None)
     check("unverified email rejected (userinfo v2 spelling)",
@@ -312,15 +316,16 @@ def phase5_oauth_signin():
     reload_with(MCP_FACULTY='{"dean@jaipuria.ac.in": {"name": "Dean", "campuses": ["jaipur"]}}',
                 OAUTH_DEFAULT_CAMPUSES="none")
     p = principal_from_claims({"email": "dean@jaipuria.ac.in", "email_verified": True})
-    check("MCP_FACULTY override narrows campuses",
-          p is not None and p["campuses"] == ["jaipur"])
-    check("unlisted email denied when OAUTH_DEFAULT_CAMPUSES=none",
+    check("old MCP_FACULTY scope cannot narrow Jaipuria access",
+          p is not None and p["campuses"] is None)
+    check("unlisted Jaipuria ID allowed when OAUTH_DEFAULT_CAMPUSES=none",
           principal_from_claims({"email": "other@jaipuria.ac.in",
-                                 "email_verified": True}) is None)
+                                 "email_verified": True})["campuses"] is None)
 
     reload_with(OAUTH_DEFAULT_CAMPUSES='["noida"]', MCP_FACULTY="")
     p = principal_from_claims({"email": "other@jaipuria.ac.in", "email_verified": True})
-    check("JSON-list default grant applies", p is not None and p["campuses"] == ["noida"])
+    check("JSON-list default cannot narrow Jaipuria access",
+          p is not None and p["campuses"] is None)
 
     reload_with(MCP_FACULTY='{"dean@jaipuria.ac.in": {"name": "Dean"}}')
     check("MCP_FACULTY entry without campuses rejected at boot",
@@ -546,6 +551,11 @@ def phase7_create_report():
 
     import tools.actions as actions
     from tools.actions import CreateReportParams, _create_impl
+    import tools.common as _common
+    _orig_fs = _common.find_student
+    _common.find_student = lambda svc, ref: {
+        "student_id": "JN25PG067", "campus": "noida", "batch": "2025-27"
+    } if ref == "JN25PG067" else None
 
     class Svc:
         def __init__(self, allowed, run="RID"):
@@ -639,7 +649,6 @@ def phase7_create_report():
           raises(lambda: run(Svc(None), client_for(FakeResp(503, {}))), ToolError))
 
     # NEW: roster-first, data-second — a batch with no completed run never reaches the agent
-    import tools.common as _common
     _orig_rm = _common.roster_member
     _common.roster_member = lambda svc, sid, c, b: {"student_id": sid, "student_name": "Divya U",
                                                      "campus": c, "batch": b}
@@ -692,6 +701,7 @@ def phase7_create_report():
     _common.graded_scopes = _orig_gs
     _common.random_gradeable_students = _orig_rgs
     _common.cached_report_students = _orig_crs
+    _common.find_student = _orig_fs
 
     # 4. boot validation: half config / non-https rejected
     def vraises():

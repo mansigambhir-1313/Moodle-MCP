@@ -52,8 +52,8 @@ services:
         sync: false
       - key: MCP_REQUIRE_AUDIT
         value: "true"
-      # Fail-closed default: only emails listed in MCP_FACULTY get access. The code
-      # code default is also "none"; keep this explicit so the deployed policy is visible.
+      # Default for other allowed domains only. Verified Jaipuria IDs get all
+      # campuses in code, including when this legacy setting remains "none".
       - key: OAUTH_DEFAULT_CAMPUSES
         value: none
       - key: MCP_FACULTY

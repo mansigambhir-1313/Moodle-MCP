@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     mcp_admin_token: str = Field(default="", alias="MCP_ADMIN_TOKEN")
     mcp_tokens_raw: str = Field(default="", alias="MCP_TOKENS")
 
-    # Google OAuth sign-in (interactive faculty auth via the Jaipuria Google Workspace).
+    # Google OAuth sign-in via the Jaipuria Google Workspace.
     # When both client id and secret are set, the server exposes the full MCP OAuth flow
     # (discovery metadata, dynamic client registration, Google consent) so hosts like
     # Claude.ai onboard each user via their jaipuria.ac.in Google account — no manual
@@ -44,9 +44,8 @@ class Settings(BaseSettings):
     # in addition to marking the Google OAuth app "Internal" to the Workspace).
     oauth_allowed_domains_raw: str = Field(default="jaipuria.ac.in",
                                            alias="OAUTH_ALLOWED_DOMAINS")
-    # Campus grant for a verified sign-in not listed in MCP_FACULTY:
-    # "none" (default) = deny unless listed; "all" = every campus; or a JSON list.
-    # Default-deny matters because faculty and students share the Workspace domain.
+    # Default for OTHER allowed domains with no explicit grant. Verified Jaipuria
+    # IDs always receive all campuses, regardless of this setting.
     oauth_default_campuses_raw: str = Field(default="none", alias="OAUTH_DEFAULT_CAMPUSES")
     # Optional per-email overrides: JSON map email -> {name?, campuses} (null = all).
     mcp_faculty_raw: str = Field(default="", alias="MCP_FACULTY")
@@ -304,14 +303,7 @@ def validate_config() -> None:
             if not isinstance(parsed_default, list) or not _valid_campuses(parsed_default):
                 raise RuntimeError("OAUTH_DEFAULT_CAMPUSES must be 'none', 'all', or a JSON "
                                    "list of non-empty campus names")
-        if settings.oauth_default_campuses() is None and not settings.faculty():
-            log.warning(
-                "OAUTH_DEFAULT_CAMPUSES is 'all' and MCP_FACULTY is empty — EVERY verified "
-                "%s Google account not found in the student roster (including alumni or "
-                "other non-faculty accounts) can read every campus's marks and attendance. "
-                "For faculty-only "
-                "access set OAUTH_DEFAULT_CAMPUSES=none and list faculty in MCP_FACULTY.",
-                ", ".join(settings.oauth_allowed_domains()))
+        log.info("Every verified jaipuria.ac.in Google account has all-campus MCP access")
         if not settings.oauth_jwt_signing_key:
             log.warning("OAUTH_JWT_SIGNING_KEY not set — issued OAuth tokens are "
                         "invalidated on every restart/redeploy (users must re-login)")

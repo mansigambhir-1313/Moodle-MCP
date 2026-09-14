@@ -1,10 +1,10 @@
 # Jaipuria Moodle Reports MCP
 
-A **faculty-facing, campus-scoped Model Context Protocol (MCP) server** that makes the Jaipuria
+A **Jaipuria Google-account-accessible Model Context Protocol (MCP) server** that makes the Jaipuria
 `student-report-system` data queryable in plain language. Connect it to any MCP host (a dashboard,
 Codex, ChatGPT, Claude.ai, Claude CLI) and ask about student marks, attendance, subjects, cohort
-analytics, longitudinal trends, at-risk students, and report accuracy — every ingested student,
-scoped to the caller's campuses.
+analytics, longitudinal trends, at-risk students, and report accuracy — every ingested student.
+Every verified `@jaipuria.ac.in` account can use the MCP across all campuses.
 
 **Endpoint:** `https://moodle-mcp.tryrehearsal.ai/mcp` · **Health:** `/health` · **Source tools:** 27
 **Repo:** `github.com/mansigambhir-1313/Moodle-MCP` · **Owner:** Jaipuria AI Labs
@@ -15,7 +15,7 @@ scoped to the caller's campuses.
 
 The pipeline in [`moodle-agent`](../moodle-agent) ingests Moodle data, computes analytics, and
 generates validated student reports into a Supabase project. This MCP is the **read side** of that
-project for faculty and the programme office: it exposes the raw data and the pipeline's outputs as
+project for Jaipuria account holders: it exposes the raw data and the pipeline's outputs as
 26 structured query/status tools plus one report-generation action that a host LLM routes on.
 
 It is **data-first** — the primary surface is the raw gradebook and attendance (queryable for
@@ -25,8 +25,8 @@ generation to the authenticated agent service. This MCP never ingests or emails.
 
 Design lineage: the [Rehearsal MCP](https://github.com/JaipuriaAILabs/rehearsal-mcp) patterns
 (bounded caches, routing-contract docstrings, response budgets, secret stripping, graceful
-degradation), adapted from that server's per-student RLS model to a **role-based, campus-scoped
-faculty model**.
+degradation), adapted from that server's per-student RLS model to institutional
+data access with Google sign-in granting Jaipuria IDs all campuses.
 
 ### Where it fits
 
@@ -182,12 +182,12 @@ who / which tool / campus scope / outcome and never contain token contents, stud
 
 ---
 
-## Access model (role-based, campus-scoped)
+## Access model
 
-Unlike the student MCP (per-user RLS), this serves faculty who see *institutional* data for their
-campuses. A **bearer token** maps to a principal with an allowed-campus set; every tool intersects
-the requested campus with that set. A campus outside the grant returns `{"found": false}` — no data
-leaks.
+Every verified Jaipuria Google account, including accounts in the student roster, can use all
+tools across all campuses. Google email verification is required, and lookalike domains are
+rejected. The legacy static-token mode and explicitly granted external OAuth accounts retain
+their configured campus scopes; every tool intersects a requested campus with that grant.
 
 Generate a per-campus token block:
 ```bash

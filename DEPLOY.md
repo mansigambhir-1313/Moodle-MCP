@@ -80,11 +80,11 @@ MCP_TOKENS={"tok_indore":{"name":"Indore TNP","campuses":["indore"]},"tok_office
 ```
 A campus outside a token's grant returns `found:false` — verified.
 
-## E. Google sign-in for faculty (recommended — no manual tokens)
+## E. Google sign-in for Jaipuria accounts (recommended — no manual tokens)
 
 With OAuth configured, hosts like Claude.ai onboard every user through the standard
 MCP OAuth flow: the user adds the connector URL, clicks "Connect", signs in with their
-**@jaipuria.ac.in** Google account, and is in. No bearer token is ever handed out.
+**@jaipuria.ac.in** Google account, and can use all MCP tools across campuses. No bearer token is ever handed out.
 (Without this, Claude.ai shows *"Couldn't register with Moodle's sign-in service"*
 and falls back to asking each user for a token.)
 
@@ -109,8 +109,8 @@ Workspace** account:
 | `MCP_SERVER_BASE_URL` | `https://<render-url>` (must be the public https URL) |
 | `OAUTH_JWT_SIGNING_KEY` | `python3 -c "import secrets;print(secrets.token_urlsafe(48))"` — keeps logins valid across redeploys |
 | `OAUTH_ALLOWED_DOMAINS` | `jaipuria.ac.in` (default) |
-| `OAUTH_DEFAULT_CAMPUSES` | `none` (default; explicit grants only) \| `all` \| `["jaipur"]` |
-| `MCP_FACULTY` | optional per-email grants, e.g. `{"tnp.indore@jaipuria.ac.in":{"name":"Indore TNP","campuses":["indore"]}}` |
+| `OAUTH_DEFAULT_CAMPUSES` | applies only to other allowed domains; Jaipuria IDs always get all campuses |
+| `MCP_FACULTY` | optional explicit grants for external accounts; Jaipuria entries do not narrow access |
 
 ### 3. Connect
 

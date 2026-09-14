@@ -71,23 +71,21 @@ Action stays as a harmless backstop.
 - With OAuth enabled, `MCP_TOKENS` / `MCP_ADMIN_TOKEN` are never consulted on
   `/mcp` (FastMCP rejects foreign bearers first). Remove them from Render so they
   are not live secrets sitting unused in env.
-- `OAUTH_DEFAULT_CAMPUSES=all` (an explicit unsafe override) + an empty faculty registry means
-  every verified `jaipuria.ac.in` Google account not found in the student roster —
-  including alumni and other non-faculty accounts — can read every campus's marks. The server now
-  logs a boot warning for this combination; the faculty-only configuration is
-  `OAUTH_DEFAULT_CAMPUSES=none` plus explicit `MCP_FACULTY` entries.
+- Every verified `jaipuria.ac.in` Google account, including students and alumni, can
+  use every MCP tool across campuses. `OAUTH_DEFAULT_CAMPUSES` and per-email grants
+  cannot narrow Jaipuria access. Keep the Google OAuth client restricted to the
+  Jaipuria Workspace and test with a real account after deployment.
 
-## Faculty access at scale — the mcp_faculty registry (2026-09-02)
+## Explicit grants for external accounts — the mcp_faculty registry
 
-Access for ~500 faculty is governed by the Supabase table `mcp_faculty`
+Access for explicitly permitted external accounts is governed by the Supabase table `mcp_faculty`
 (email PK, `campuses` = `"all"` or `["noida","jaipur",...]`, `active`,
-`name`, `note`). The server consults it on every sign-in with the grant order:
+`name`, `note`). The server grants Jaipuria IDs all campuses before consulting the table.
+For other domains, it uses this grant order:
 
 1. `MCP_FACULTY` env — break-glass admin override (survives DB outages and a
    poisoned roster; keep ONLY the administrator here);
-2. **student hard deny** — 3,144 students share the `jaipuria.ac.in` Google
-   domain, so any email found in the `students` roster is denied even if it has
-   an mcp_faculty row;
+2. student-roster deny for external accounts;
 3. `mcp_faculty` row (active) — the normal path; malformed/inactive rows deny;
 4. `OAUTH_DEFAULT_CAMPUSES` — `none` in production, so everything else denies.
 
@@ -95,10 +93,10 @@ Lookups are cached ~60s (roster hits 10 min), so changes apply within a minute
 without a redeploy; a transient DB error serves the last-known-good grant for
 signed-in users and denies strangers (fail closed).
 
-**Add one faculty member** (service role, SQL editor):
+**Add one external account** (service role, SQL editor):
 ```sql
 insert into mcp_faculty (email, name, campuses, note)
-values ('prof@jaipuria.ac.in', 'Prof Name', '["noida"]'::jsonb, 'added by <you>')
+values ('external@example.com', 'External Name', '["noida"]'::jsonb, 'added by <you>')
 on conflict (email) do update
   set name=excluded.name, campuses=excluded.campuses,
       active=true, updated_at=now();
@@ -120,14 +118,13 @@ on conflict (email) do update
 ```
 (CSV `campuses` column: `all`, or `noida+jaipur` style.)
 
-**Revoke**: `update mcp_faculty set active=false, updated_at=now() where email='...';`
-— takes effect within the 60s cache TTL. Never delete rows for audit history.
+**Revoke an external grant**: `update mcp_faculty set active=false, updated_at=now() where email='...';`
+— takes effect within the 60s cache TTL. This does not revoke Jaipuria-domain access.
 
 **Invariants**: the MCP's own DB role (`reporting_readonly`) can SELECT this
-table and cannot write it (verified: INSERT → permission denied). Students are
-denied at gate 2 regardless of table contents. `create_report` inputs are
-validated to `[A-Za-z0-9_-]{1,64}` before touching the HMAC-authenticated report-job
-URL, so no faculty token can steer that request to another route.
+table and cannot write it (verified: INSERT → permission denied). `create_report` inputs are
+resolved to canonical student IDs before touching the HMAC-authenticated report-job
+URL, so a caller cannot steer that request to another route.
 
 **NAT headroom**: faculty may share campus egress IPs. Keep proxy headers disabled until the raw
 origin is locked to the edge, use edge rate limiting for source IPs, and size the transport cap
