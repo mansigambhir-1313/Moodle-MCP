@@ -92,6 +92,18 @@ class Settings(BaseSettings):
     allowed_hosts_raw: str = Field(default="", alias="MCP_ALLOWED_HOSTS")
     audit_hmac_key: str = Field(default="", alias="MCP_AUDIT_HMAC_KEY")
     require_audit: bool = Field(default=False, alias="MCP_REQUIRE_AUDIT")
+    # Activity capture (AIA-1012 telemetry). Each flag WIDENS the audit metadata
+    # beyond the privacy-safe default. All default OFF, so enabling audit alone
+    # changes nothing; turning these on records real identity / full tool
+    # arguments / result payloads / source IP into mcp_audit.tool_calls.metadata.
+    # These hold student PII + who-viewed-whom — keep the audit store locked-down,
+    # set a retention/consent posture, and never mirror them to New Relic in clear.
+    capture_identity: bool = Field(default=False, alias="MCP_CAPTURE_IDENTITY")
+    capture_arguments: bool = Field(default=False, alias="MCP_CAPTURE_ARGUMENTS")
+    capture_results: bool = Field(default=False, alias="MCP_CAPTURE_RESULTS")
+    capture_client_ip: bool = Field(default=False, alias="MCP_CAPTURE_CLIENT_IP")
+    capture_args_max_bytes: int = Field(default=4096, alias="MCP_CAPTURE_ARGS_MAX_BYTES")
+    capture_result_max_bytes: int = Field(default=8192, alias="MCP_CAPTURE_RESULT_MAX_BYTES")
     # Reject access tokens shorter than this at boot (set ALLOW_WEAK_TOKENS to skip).
     allow_weak_tokens: bool = Field(default=False, alias="ALLOW_WEAK_TOKENS")
     # Bypass resistance (AIA-1013 #4): when GATEWAY_ENFORCED, /mcp only accepts requests

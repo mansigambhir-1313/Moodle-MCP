@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import logging
 import time
 import uuid
@@ -33,6 +34,75 @@ def principal_subject(principal) -> str:
     return _subject(str(stable)) or "unknown"
 
 
+def _capped(obj, cap: int):
+    """Best-effort JSON-safe value, size-capped. Returns the parsed structure when
+    small enough to store verbatim; otherwise a truncated preview + byte count.
+    Never raises — audit enrichment must not change a tool outcome."""
+    try:
+        text = json.dumps(obj, default=str, ensure_ascii=False)
+    except Exception:  # noqa: BLE001
+        try:
+            text = str(obj)
+        except Exception:  # noqa: BLE001
+            return {"_error": "unserialisable"}
+    if len(text.encode("utf-8", "replace")) <= cap:
+        try:
+            return json.loads(text)
+        except Exception:  # noqa: BLE001
+            return text
+    return {"_truncated": True, "_bytes": len(text.encode("utf-8", "replace")),
+            "preview": text[:cap]}
+
+
+def _summarise_result(result, cap: int):
+    """Extract a JSON-able view of a FastMCP tool result (structured content,
+    content blocks, or a plain value), size-capped. Never raises."""
+    try:
+        payload = None
+        for attr in ("structured_content", "structuredContent", "data"):
+            value = getattr(result, attr, None)
+            if value is not None:
+                payload = value
+                break
+        if payload is None:
+            content = getattr(result, "content", None)
+            if content is not None:
+                try:
+                    payload = [getattr(b, "text", None)
+                               or getattr(b, "data", None) or str(b) for b in content]
+                except Exception:  # noqa: BLE001
+                    payload = str(content)
+        if payload is None:
+            payload = result if isinstance(
+                result, (dict, list, str, int, float, bool)) else str(result)
+        return _capped(payload, cap)
+    except Exception:  # noqa: BLE001
+        return {"_error": "summary_failed"}
+
+
+def build_metadata(*, identity=None, arguments=None, result=None,
+                   source_ip: str | None = None) -> dict:
+    """Assemble the audit `metadata` blob, gated by the MCP_CAPTURE_* flags.
+
+    With every flag at its default (off) this returns only the server version —
+    identical to the historic privacy-safe behaviour. Turning a flag on widens
+    capture to real identity / full arguments / result payload / source IP.
+    This is a pure function so the gating can be unit-tested without a network.
+    """
+    meta: dict = {"server_version": settings.server_version}
+    if settings.capture_identity and isinstance(identity, dict):
+        # Keep campuses even when None — None is meaningful here (all-campus grant),
+        # so it must be recorded, not treated as "absent".
+        meta["identity"] = {k: identity.get(k) for k in ("email", "name", "campuses")}
+    if settings.capture_client_ip and source_ip:
+        meta["source_ip"] = str(source_ip)[:64]
+    if settings.capture_arguments and arguments is not None:
+        meta["arguments"] = _capped(arguments, settings.capture_args_max_bytes)
+    if settings.capture_results and result is not None:
+        meta["result"] = _summarise_result(result, settings.capture_result_max_bytes)
+    return meta
+
+
 def _client() -> httpx.AsyncClient:
     global _http
     if _http is None:
@@ -49,22 +119,32 @@ async def record_tool_call(
     headers: dict | None = None,
     scope: str | None = None,
     error_code: str | None = None,
+    arguments=None,
+    result=None,
+    source_ip: str | None = None,
 ) -> bool:
-    """Insert one sanitized event and report whether durable delivery succeeded.
+    """Insert one audit event and report whether durable delivery succeeded.
 
     ``ok=None`` is a pre-execution attempt record. In fail-closed audit mode that
     record must land before any data access or report generation begins.
+
+    ``arguments`` / ``result`` / ``source_ip`` are captured into ``metadata`` only
+    when the matching MCP_CAPTURE_* flag is on (all default off — see build_metadata);
+    the pseudonymised user/session/client subjects are always recorded.
     """
     headers = {str(k).lower(): str(v) for k, v in (headers or {}).items()}
     user_subject = principal_subject(principal)
     duration_ms = max(0, round((time.monotonic() - started) * 1000))
     request_id = headers.get("x-request-id") or str(uuid.uuid4())
+    metadata = build_metadata(identity=principal, arguments=arguments,
+                              result=result, source_ip=source_ip)
 
     if not settings.audit_enabled():
-        log.info("audit tool=%s subject=%s ok=%s scope=%s duration_ms=%s error=%s",
+        log.info("audit tool=%s subject=%s ok=%s scope=%s duration_ms=%s error=%s cap=%s",
                  tool, user_subject[:16], "attempt" if ok is None else int(ok),
-                 scope or "-", duration_ms,
-                 error_code or "-")
+                 scope or "-", duration_ms, error_code or "-",
+                 ",".join(k for k in ("identity", "arguments", "result", "source_ip")
+                          if k in metadata) or "-")
         return False
 
     payload = {
@@ -78,7 +158,7 @@ async def record_tool_call(
         "p_request_id": request_id[:128],
         "p_session_subject": _subject(headers.get("mcp-session-id")),
         "p_client_subject": _subject(headers.get("user-agent")),
-        "p_metadata": {"server_version": settings.server_version},
+        "p_metadata": metadata,
     }
     base = settings.supabase_url.rstrip("/")
     api_key = settings.supabase_anon_key or settings.supabase_audit_key

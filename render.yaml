@@ -52,6 +52,24 @@ services:
         sync: false
       - key: MCP_REQUIRE_AUDIT
         value: "true"
+      # Activity capture (AIA-1012). Each flag WIDENS mcp_audit.tool_calls.metadata
+      # beyond the privacy-safe default. All "false" here = today's behaviour (only a
+      # pseudonymised event is stored). Turn on to record real identity / full tool
+      # arguments / result payloads / source IP — student PII + who-viewed-whom, so
+      # gate them behind a decided retention + privacy-notice posture, and never
+      # mirror the raw values to New Relic. Size caps bound each row.
+      - key: MCP_CAPTURE_IDENTITY
+        value: "false"
+      - key: MCP_CAPTURE_ARGUMENTS
+        value: "false"
+      - key: MCP_CAPTURE_RESULTS
+        value: "false"
+      - key: MCP_CAPTURE_CLIENT_IP
+        value: "false"
+      - key: MCP_CAPTURE_ARGS_MAX_BYTES
+        value: "4096"
+      - key: MCP_CAPTURE_RESULT_MAX_BYTES
+        value: "8192"
       # Default for other allowed domains only. Verified Jaipuria IDs get all
       # campuses in code, including when this legacy setting remains "none".
       - key: OAUTH_DEFAULT_CAMPUSES

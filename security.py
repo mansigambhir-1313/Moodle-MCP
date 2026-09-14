@@ -449,11 +449,26 @@ def build_middleware(rate_limit: int, window: float):
         except Exception:  # noqa: BLE001
             return "anon"
 
+    def _args(context):
+        try:
+            return getattr(context.message, "arguments", None)
+        except Exception:  # noqa: BLE001
+            return None
+
     def _scope(context):
         try:
-            args = getattr(context.message, "arguments", None) or {}
+            args = _args(context) or {}
             p = args.get("params") if isinstance(args, dict) else None
             return (p or {}).get("campus") if isinstance(p, dict) else None
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _source_ip(headers):
+        # First hop of X-Forwarded-For (Render/PaaS set it). Only stored when
+        # MCP_CAPTURE_CLIENT_IP is on — computing it here is cheap and side-effect free.
+        try:
+            xff = headers.get("x-forwarded-for")
+            return xff.split(",")[0].strip() if xff else None
         except Exception:  # noqa: BLE001
             return None
 
@@ -463,28 +478,32 @@ def build_middleware(rate_limit: int, window: float):
             principal = _principal()
             headers = get_http_headers() or {}
             started = time.monotonic()
+            # Capture context — enriched into metadata only when the MCP_CAPTURE_* flags
+            # are on (see audit_store.build_metadata); otherwise these are inert.
+            cap = {"arguments": _args(context), "source_ip": _source_ip(headers)}
             from audit_store import record_tool_call
             if settings.require_audit:
                 recorded = await record_tool_call(
                     tool=name, principal=principal, ok=None, started=started,
-                    headers=headers, scope=_scope(context))
+                    headers=headers, scope=_scope(context), **cap)
                 if not recorded:
                     raise ToolError(MSG_AUDIT)
             ok, _retry = await limiter.allow(_rate_key())
             if not ok:
                 await record_tool_call(tool=name, principal=principal, ok=False,
                                        started=started, headers=headers,
-                                       scope=_scope(context), error_code="rate_limited")
+                                       scope=_scope(context), error_code="rate_limited", **cap)
                 raise ToolError(MSG_RATE)
             try:
                 result = await call_next(context)
                 await record_tool_call(tool=name, principal=principal, ok=True,
-                                       started=started, headers=headers, scope=_scope(context))
+                                       started=started, headers=headers,
+                                       scope=_scope(context), result=result, **cap)
                 return result
             except ToolError:
                 await record_tool_call(tool=name, principal=principal, ok=False,
                                        started=started, headers=headers,
-                                       scope=_scope(context), error_code="tool_error")
+                                       scope=_scope(context), error_code="tool_error", **cap)
                 raise  # already a clean, caller-safe message
             except ValidationError as e:
                 # Caller sent bad/missing parameters. Tell them WHICH — this is
@@ -494,19 +513,19 @@ def build_middleware(rate_limit: int, window: float):
                 loc = ".".join(str(x) for x in first.get("loc", ())) or "params"
                 await record_tool_call(tool=name, principal=principal, ok=False,
                                        started=started, headers=headers,
-                                       scope=_scope(context), error_code="bad_params")
+                                       scope=_scope(context), error_code="bad_params", **cap)
                 raise ToolError(f"Invalid parameters — {loc}: "
                                 f"{first.get('msg', 'validation failed')}")
             except PermissionError:
                 await record_tool_call(tool=name, principal=principal, ok=False,
                                        started=started, headers=headers,
-                                       scope=_scope(context), error_code="unauthorized")
+                                       scope=_scope(context), error_code="unauthorized", **cap)
                 raise ToolError(MSG_DENIED)
             except Exception:  # noqa: BLE001 - the point is to never leak internals
                 log.exception("tool %s failed", name)
                 await record_tool_call(tool=name, principal=principal, ok=False,
                                        started=started, headers=headers,
-                                       scope=_scope(context), error_code="internal_error")
+                                       scope=_scope(context), error_code="internal_error", **cap)
                 raise ToolError(MSG_ERROR)
 
     return GuardMiddleware()
