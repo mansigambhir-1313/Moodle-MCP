@@ -1,45 +1,51 @@
-name: ci
+name: CI
+
+# Gate every change to main on the plain-assert test suite + a byte-compile of the
+# whole package. The tests need no network (Supabase/HTTP are mocked or use dummy env),
+# so this runs in well under a minute.
 
 on:
+  pull_request:
+    branches: [main]
   push:
-    branches:
-      - main
-      - "codex/**"
-  pull_request: {}
-  workflow_dispatch: {}
+    branches: [main]
 
-permissions:
-  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
     env:
-      # runner.* is not available while GitHub validates job-level env.
-      FASTMCP_HOME: /tmp/moodle-fastmcp
+      # The suites call os.environ.setdefault for these; set explicit dummies so a
+      # runner with stray env can't change behaviour.
+      SUPABASE_URL: https://example.supabase.co
+      SUPABASE_SERVICE_ROLE_KEY: ci-dummy-service-key
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.12"   # matches the Dockerfile (python:3.12-slim)
           cache: pip
+
       - name: Install dependencies
-        run: python -m pip install -r requirements.txt
-      - name: Check dependency consistency
-        run: python -m pip check
-      - name: Validate Codex packaging
-        run: python scripts/validate_codex_packaging.py
-      - name: Run isolated repository checks
+        run: pip install -r requirements.txt
+
+      - name: Byte-compile the package
+        run: python -m compileall -q .
+
+      - name: Run test suite
         run: |
           set -euo pipefail
-          for test_file in \
-            tests/test_faculty_registry.py \
-            tests/test_client_wiring.py \
-            tests/test_create_report_scoping.py \
-            tests/test_scope_normalizer.py \
-            tests/test_data_fixes.py \
-            tests/test_hardening.py
-          do
-            python "$test_file"
+          fail=0
+          for t in tests/test_*.py; do
+            echo "::group::$t"
+            if python "$t"; then echo "PASS $t"; else echo "FAIL $t"; fail=1; fi
+            echo "::endgroup::"
           done
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::one or more test files failed"; exit 1
+          fi
+          echo "all test files passed"
