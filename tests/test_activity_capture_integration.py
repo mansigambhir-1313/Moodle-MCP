@@ -159,7 +159,10 @@ succ = [c for c in CALLS if c.get("ok") is True]
 check("middleware recorded exactly one success", len(succ) == 1)
 check("middleware forwarded arguments", succ[0]["arguments"]["params"]["student_id"] == "Aashna Gupta")
 check("middleware forwarded the ToolResult object", isinstance(succ[0].get("result"), ToolResult))
-check("middleware forwarded X-Forwarded-For first hop", succ[0].get("source_ip") == "9.9.9.9")
+# X-Forwarded-For "9.9.9.9, 10.0.0.1": the LAST hop (10.0.0.1) is the trusted
+# proxy-appended value; the leftmost (9.9.9.9) is client-supplied/spoofable.
+check("middleware forwards the TRUSTED (rightmost) X-Forwarded-For hop",
+      succ[0].get("source_ip") == "10.0.0.1")
 check("middleware returned the tool result unchanged",
       isinstance(res, ToolResult) and res.structured_content.get("student_id") == "JN25MM002")
 

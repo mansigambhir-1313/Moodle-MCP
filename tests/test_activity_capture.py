@@ -109,6 +109,14 @@ check("truncated blob records real byte size",
 check("truncated preview respects the cap",
       len(meta["arguments"].get("preview", "")) <= 64)
 
+# Multi-byte: the cap is a BYTE budget, so a char-slice must not blow past it.
+_set(capture_arguments=True, capture_args_max_bytes=16)
+mb = audit_store.build_metadata(arguments={"n": "你好世界" * 20})  # 3 bytes/char
+check("multi-byte preview stays within the BYTE cap",
+      len(mb["arguments"]["preview"].encode("utf-8")) <= 16)
+check("multi-byte truncation still reports true byte size",
+      mb["arguments"]["_bytes"] > 16)
+
 
 # --------------------------------------------------------------------------
 print("\n[ robustness — unserialisable / odd results never raise ]")

@@ -45,13 +45,16 @@ def _capped(obj, cap: int):
             text = str(obj)
         except Exception:  # noqa: BLE001
             return {"_error": "unserialisable"}
-    if len(text.encode("utf-8", "replace")) <= cap:
+    raw = text.encode("utf-8", "replace")
+    if len(raw) <= cap:
         try:
             return json.loads(text)
         except Exception:  # noqa: BLE001
             return text
-    return {"_truncated": True, "_bytes": len(text.encode("utf-8", "replace")),
-            "preview": text[:cap]}
+    # Truncate on BYTES, not characters — a char slice can be ~4x the byte cap for
+    # multi-byte (CJK/emoji) payloads and blow past the intended size limit.
+    return {"_truncated": True, "_bytes": len(raw),
+            "preview": raw[:cap].decode("utf-8", "ignore")}
 
 
 def _summarise_result(result, cap: int):

@@ -152,5 +152,36 @@ _op_seen = []
 reports._onepager_fetch(SvcC(_op_seen), P(RAW))
 check("one-pager cache keyed on RESOLVED id", _op_seen == [RESOLVED_ID])
 
+
+# The RETURN payload must echo the resolved id too (regression: it returned the raw
+# name while keying the query on sid). Exercise the return branch with a narrative row.
+class _QRow:
+    def select(self, *a, **k):
+        return self
+
+    def eq(self, *a, **k):
+        return self
+
+    def limit(self, n):
+        return self
+
+    def execute(self):
+        class _R:
+            data = [{"trimester": "5", "created_at": "2026-01-01T00:00:00Z",
+                     "narrative": {"personal_pattern": {"headline": "H", "observation": "O"}}}]
+        return _R()
+
+
+class SvcRow:
+    client = type("C", (), {"table": lambda self, name: _QRow()})()
+
+    def latest_run(self, campus, batch):
+        return "run1"
+
+
+_ret = reports._onepager_fetch(SvcRow(), P(RAW))
+check("one-pager RETURN echoes RESOLVED id (not the raw name)",
+      isinstance(_ret, dict) and _ret.get("student", {}).get("student_id") == RESOLVED_ID)
+
 print(f"\n{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)

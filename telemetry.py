@@ -45,6 +45,11 @@ def setup_telemetry(settings) -> bool:
             headers=settings.otel_headers(),
         )))
         trace.set_tracer_provider(provider)
+        # BatchSpanProcessor buffers spans; flush them on process exit so a redeploy /
+        # SIGTERM (routine on Render) doesn't silently drop the last batch and under-count
+        # error/throughput/latency alerts around every deploy.
+        import atexit
+        atexit.register(provider.shutdown)
         log.info("OTel tracing enabled → %s (service=%s)",
                  settings.otel_traces_endpoint(), settings.server_name)
         return True

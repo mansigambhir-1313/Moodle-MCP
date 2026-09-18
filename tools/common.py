@@ -78,7 +78,11 @@ def find_student(svc, student_id):
 
     # 2) Name / id fragment, case-insensitive, still campus-scoped. Sanitised so it can't break
     #    the PostgREST or-filter (keep letters/digits/space/hyphen only; `*` = ilike wildcard).
-    frag = "".join(ch for ch in query if ch.isalnum() or ch in " -").strip()
+    #    Apostrophes and dots are turned into token breaks rather than dropped, so "D'Souza"
+    #    and "J. Smith" become "*D*Souza*" / "*J*Smith*" and still ilike-match the stored name
+    #    (dropping them would make "D'Souza" -> "DSouza", which never matches).
+    frag = "".join(ch if (ch.isalnum() or ch in " -") else " "
+                   for ch in query.replace("'", " ").replace(".", " ")).strip()
     if not frag:
         return None
     # Join tokens with the ilike wildcard so "Aashna Gupta" matches "AASHNA  GUPTA" — the roster

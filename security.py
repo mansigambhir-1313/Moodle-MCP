@@ -309,13 +309,16 @@ async def _send_json(send, status: int, payload: dict, extra: dict | None = None
 
 
 def client_ip(scope, headers: dict) -> str:
-    """Best-effort client IP for pre-auth rate limiting. Prefers the first hop of
-    X-Forwarded-For (Render/most PaaS set it), falls back to the socket peer."""
+    """Best-effort client IP for pre-auth rate limiting. Uses the LAST (rightmost) hop
+    of X-Forwarded-For — the one the trusted proxy (Render) appends. The leftmost hop is
+    client-supplied and therefore spoofable; keying the per-IP limiter on it would let a
+    flood/guessing client mint a fresh budget per forged IP. Falls back to the socket
+    peer. (Assumes a single trusted proxy in front, as on Render.)"""
     xff = headers.get("x-forwarded-for")
     if xff:
-        first = xff.split(",")[0].strip()
-        if first:
-            return first
+        hops = [h.strip() for h in xff.split(",") if h.strip()]
+        if hops:
+            return hops[-1]
     client = scope.get("client")
     return client[0] if client else "unknown"
 
@@ -435,12 +438,19 @@ def _start_tool_span(name: str):
     tracer is fetched lazily so it always uses whatever provider setup_telemetry set."""
     if _otel_trace is None:
         return None
+    span = None
     try:
         span = _otel_trace.get_tracer("moodle-mcp").start_span(
             f"mcp.tool.{name}", kind=_SpanKind.SERVER)
         span.set_attribute("mcp.tool", name)
         return span
     except Exception:  # noqa: BLE001
+        # If a started span failed mid-setup, end it so it can't leak/never-flush.
+        if span is not None:
+            try:
+                span.end()
+            except Exception:  # noqa: BLE001
+                pass
         return None
 
 
@@ -507,11 +517,15 @@ def build_middleware(rate_limit: int, window: float):
             return None
 
     def _source_ip(headers):
-        # First hop of X-Forwarded-For (Render/PaaS set it). Only stored when
-        # MCP_CAPTURE_CLIENT_IP is on — computing it here is cheap and side-effect free.
+        # LAST (rightmost) hop of X-Forwarded-For — the trusted-proxy-appended value;
+        # the leftmost is client-supplied/spoofable so it must not be logged as the
+        # source of record. Only stored when MCP_CAPTURE_CLIENT_IP is on.
         try:
             xff = headers.get("x-forwarded-for")
-            return xff.split(",")[0].strip() if xff else None
+            if not xff:
+                return None
+            hops = [h.strip() for h in xff.split(",") if h.strip()]
+            return hops[-1] if hops else None
         except Exception:  # noqa: BLE001
             return None
 
@@ -544,10 +558,16 @@ def build_middleware(rate_limit: int, window: float):
                     raise ToolError(MSG_RATE)
                 try:
                     result = await call_next(context)
-                    await record_tool_call(tool=name, principal=principal, ok=True,
-                                           started=started, headers=headers,
-                                           scope=_scope(context), result=result, **cap)
+                    # The call succeeded — lock in the outcome BEFORE the audit write so a
+                    # (defensive) audit failure can never be re-caught below and reported to
+                    # the caller as a tool error. record_tool_call is itself exception-safe.
                     outcome, err = "success", None
+                    try:
+                        await record_tool_call(tool=name, principal=principal, ok=True,
+                                               started=started, headers=headers,
+                                               scope=_scope(context), result=result, **cap)
+                    except Exception:  # noqa: BLE001 — success audit must never fail the call
+                        log.warning("post-success audit for %s failed", name, exc_info=True)
                     return result
                 except ToolError:
                     await record_tool_call(tool=name, principal=principal, ok=False,

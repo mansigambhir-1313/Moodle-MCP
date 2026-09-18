@@ -138,7 +138,9 @@ def build_oauth_storage(settings):
     from key_value.aio.wrappers.encryption import FernetEncryptionWrapper
 
     fernet = oauth_fernet(encryption_material)
-    key_count = encryption_material.count(",") + 1 if "," in encryption_material else 1
+    # Count real (non-empty) keys, mirroring oauth_fernet's own parsing — so a trailing
+    # comma ("a,") doesn't misreport "2-key set" when only one Fernet is built.
+    key_count = len([m for m in encryption_material.split(",") if m.strip()])
     if key_count > 1:
         log.info("OAuth storage: %d-key set — rotation-tolerant decryption enabled", key_count)
     store = SupabaseKVStore(

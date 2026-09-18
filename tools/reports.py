@@ -142,7 +142,7 @@ def _onepager_fetch(svc, p: ReportParams):
         return None
     return {
         "found": True, "format": "onepage",
-        "student": {"student_id": p.student_id, "name": row.get("student_name"),
+        "student": {"student_id": sid, "name": row.get("student_name"),
                     "campus": row.get("campus"), "batch": row.get("batch")},
         "trimester": latest.get("trimester"),
         "narrative": n,
