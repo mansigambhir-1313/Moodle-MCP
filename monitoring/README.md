@@ -30,7 +30,8 @@ call — `mcp.tool.<name>`, `service.name='jaipuria-moodle-mcp'`, attributes `mc
 | error-rate spike | `SELECT percentage(count(*), WHERE otel.status_code='ERROR') FROM Span WHERE service.name = 'jaipuria-moodle-mcp' AND name LIKE 'mcp.tool.%'` | > 5% for 5m |
 | p95 tool latency | `SELECT percentile(duration.ms, 95) FROM Span WHERE service.name = 'jaipuria-moodle-mcp' AND name LIKE 'mcp.tool.%'` | > 3000 ms for 5m |
 | throughput floor / silence | `SELECT rate(count(*), 1 minute) FROM Span WHERE service.name = 'jaipuria-moodle-mcp' AND name LIKE 'mcp.tool.%'` | no data 10m |
-| auth-denial surge | `SELECT count(*) FROM Span WHERE service.name = 'jaipuria-moodle-mcp' AND mcp.error_code = 'unauthorized'` | > N for 5m |
+| auth-denial surge | `SELECT count(*) FROM Span WHERE service.name = 'jaipuria-moodle-mcp' AND name = 'mcp.auth' AND mcp.outcome = 'failure'` | > N for 5m |
+| auth p95 latency | `SELECT percentile(duration.ms, 95) FROM Span WHERE service.name = 'jaipuria-moodle-mcp' AND name = 'mcp.auth'` | > 1500 ms for 5m (Google tokeninfo per request) |
 
 ## Usage analytics (from the audit ledger, not NR)
 Per-user activity, most-queried students, tool-usage mix, adoption/DAU come from the

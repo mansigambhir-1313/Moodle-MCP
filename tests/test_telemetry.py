@@ -59,13 +59,22 @@ _set(new_relic_license_key="NRAK-testkey", otel_headers_raw="")
 res = telemetry.setup_telemetry(settings)  # True if SDK installed, False if not — never raises
 check("setup_telemetry returns a bool (no exception)", isinstance(res, bool))
 
-print("\n[ span helpers are safe no-ops ]")
+print("\n[ tool span helpers are safe no-ops ]")
 span = security._start_tool_span("get_student")   # None, or a (non-recording) span
 security._end_tool_span(span, "success", None, "noida")     # must not raise
 security._end_tool_span(span, "failure", "unauthorized", None)
 security._end_tool_span(None, "failure", "rate_limited", None)  # explicit None path
 check("start/end tool span never raise", True)
 check("get_tracer() returns something or None", telemetry.get_tracer() is not None or True)
+
+print("\n[ generic auth span helpers are safe no-ops ]")
+asp = telemetry.start_span("mcp.auth")
+telemetry.end_span(asp, "success", None, {"mcp.auth.mode": "oauth"})   # must not raise
+telemetry.end_span(telemetry.start_span("mcp.auth"), "failure", "unauthorized",
+                   {"mcp.auth.mode": "static"})
+telemetry.end_span(None, "failure", "auth_error", None)               # explicit None path
+telemetry.end_span(None)                                              # no-arg None path
+check("start_span/end_span never raise (incl. None)", True)
 
 _set(**_ORIG)
 print(f"\n{PASS} passed, {FAIL} failed")

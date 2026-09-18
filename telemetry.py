@@ -61,3 +61,37 @@ def get_tracer():
         return trace.get_tracer(_INSTRUMENTATION)
     except Exception:  # noqa: BLE001
         return None
+
+
+def start_span(name: str):
+    """Start a SERVER span, or None when OTel isn't importable / a provider isn't set.
+    Pair with end_span(). Never raises."""
+    try:
+        from opentelemetry import trace
+        return trace.get_tracer(_INSTRUMENTATION).start_span(name, kind=trace.SpanKind.SERVER)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def end_span(span, outcome: str | None = None, error_code=None, attributes=None) -> None:
+    """Finish a span from start_span(): stamp outcome/error_code/attributes, mark ERROR
+    on failure, and end it. Safe to call with None (no-op). Never raises."""
+    if span is None:
+        return
+    try:
+        from opentelemetry.trace import StatusCode
+        for key, value in (attributes or {}).items():
+            span.set_attribute(key, value)
+        if outcome:
+            span.set_attribute("mcp.outcome", outcome)
+        if error_code:
+            span.set_attribute("mcp.error_code", error_code)
+        if outcome == "failure":
+            span.set_status(StatusCode.ERROR, error_code or "error")
+    except Exception:  # noqa: BLE001
+        pass
+    finally:
+        try:
+            span.end()
+        except Exception:  # noqa: BLE001
+            pass

@@ -129,12 +129,26 @@ async def get_authenticated_service():
     unapproved account still gets PermissionError here. Legacy mode: constant-time
     static-token lookup, defense-in-depth behind TransportGuard's 401."""
     from fastmcp.server.dependencies import get_http_headers
-    principal = resolve_oauth_principal() if settings.oauth_enabled() else None
-    if principal is None:
-        principal = resolve_principal(bearer_of(get_http_headers() or {}))
-    if not principal:
-        raise PermissionError("missing or invalid access token")
-    return create_service(principal)
+
+    import telemetry
+    span = telemetry.start_span("mcp.auth")   # None unless OTel tracing is enabled
+    mode = "oauth" if settings.oauth_enabled() else "static"
+    try:
+        principal = resolve_oauth_principal() if settings.oauth_enabled() else None
+        if principal is None:
+            principal = resolve_principal(bearer_of(get_http_headers() or {}))
+        if not principal:
+            raise PermissionError("missing or invalid access token")
+        svc = create_service(principal)
+        telemetry.end_span(span, "success", None, {"mcp.auth.mode": mode})
+        span = None
+        return svc
+    except PermissionError:
+        telemetry.end_span(span, "failure", "unauthorized", {"mcp.auth.mode": mode})
+        span = None
+        raise
+    finally:
+        telemetry.end_span(span, "failure", "auth_error", {"mcp.auth.mode": mode})
 
 
 @mcp.tool(title="Who Am I", annotations=READONLY_ANNOTATIONS)
