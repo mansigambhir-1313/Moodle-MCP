@@ -105,13 +105,17 @@ def _student_impl(svc, p: StudentParams) -> dict:
     stu, run_id, courses = got
     if run_id is None:
         return enrolled_no_data(stu)
+    # p.student_id may be a NAME; find_student resolved it to the row. Use the resolved
+    # enrolment id for the marks/attendance lookups (they key on the exact id) and echo it
+    # back — else a name returns the right header but zero data.
+    sid = stu["student_id"]
     cids = list(courses)
-    marks = marks_for(svc, run_id, student_id=p.student_id, course_ids=cids)
-    att = attendance_for(svc, run_id, student_id=p.student_id, course_ids=cids)
+    marks = marks_for(svc, run_id, student_id=sid, course_ids=cids)
+    att = attendance_for(svc, run_id, student_id=sid, course_ids=cids)
     subjects = _subject_rollup(courses, marks, att)
     ov_att = attendance_pct(att)
     return {"found": True,
-            "student": {"student_id": p.student_id, "name": stu.get("student_name"),
+            "student": {"student_id": sid, "name": stu.get("student_name"),
                         "campus": stu.get("campus"), "batch": stu.get("batch"),
                         "section": stu.get("section_group")},
             "trimester": p.trimester or "all",
@@ -127,7 +131,8 @@ def _marks_impl(svc, p: StudentParams) -> dict:
     stu, run_id, courses = got
     if run_id is None:
         return enrolled_no_data(stu)
-    marks = marks_for(svc, run_id, student_id=p.student_id, course_ids=list(courses))
+    sid = stu["student_id"]  # resolved id (find_student accepts a name); see _student_impl
+    marks = marks_for(svc, run_id, student_id=sid, course_ids=list(courses))
     out = []
     for m in marks:
         meta = courses.get(m["course_id"], {})
@@ -137,7 +142,7 @@ def _marks_impl(svc, p: StudentParams) -> dict:
                     "pct": pct(m.get("obtained_score"), m.get("max_score")),
                     "graded": m.get("graded")})
     out.sort(key=lambda x: (x["subject"] or "", x["component"] or ""))
-    return {"student_id": p.student_id, "name": stu.get("student_name"),
+    return {"student_id": sid, "name": stu.get("student_name"),
             "components": len(out), "marks": out}
 
 
@@ -148,7 +153,8 @@ def _attendance_impl(svc, p: StudentParams) -> dict:
     stu, run_id, courses = got
     if run_id is None:
         return enrolled_no_data(stu)
-    att = attendance_for(svc, run_id, student_id=p.student_id, course_ids=list(courses))
+    sid = stu["student_id"]  # resolved id (find_student accepts a name); see _student_impl
+    att = attendance_for(svc, run_id, student_id=sid, course_ids=list(courses))
     by_course = defaultdict(list)
     for a in att:
         by_course[a["course_id"]].append(a)
@@ -159,7 +165,7 @@ def _attendance_impl(svc, p: StudentParams) -> dict:
                          "present": present, "sessions": total, "attendance_pct": apct})
     subjects.sort(key=lambda s: (s["attendance_pct"] is None, s["attendance_pct"] or 0))
     ov = attendance_pct(att)
-    return {"student_id": p.student_id, "name": stu.get("student_name"),
+    return {"student_id": sid, "name": stu.get("student_name"),
             "overall_attendance_pct": ov[2], "overall_sessions": ov[1], "subjects": subjects}
 
 

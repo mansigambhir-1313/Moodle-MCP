@@ -60,11 +60,12 @@ def _traj_impl(svc, p: StudentParams) -> dict:
     stu = find_student(svc, p.student_id)
     if not stu:
         return not_found("student")
+    sid = stu["student_id"]  # resolve name -> enrolment id before the per-student series lookup
     run_id = svc.latest_run(stu["campus"], stu["batch"])
     if not run_id:
         return enrolled_no_data(stu)
-    series = _series(svc, run_id, p.student_id, courses_for(svc, run_id))
-    return {"found": True, "student_id": p.student_id, "name": stu.get("student_name"),
+    series = _series(svc, run_id, sid, courses_for(svc, run_id))
+    return {"found": True, "student_id": sid, "name": stu.get("student_name"),
             "campus": stu.get("campus"), "batch": stu.get("batch"),
             "trajectory": series, "trend": _trend(series)}
 
@@ -81,17 +82,18 @@ def _360_impl(svc, p: StudentParams) -> dict:
     stu = find_student(svc, p.student_id)
     if not stu:
         return not_found("student")
+    sid = stu["student_id"]  # resolve name -> enrolment id so the series + cohort lookup key match
     campus, batch = stu["campus"], stu["batch"]
     run_id = svc.latest_run(campus, batch)
     if not run_id:
         return enrolled_no_data(stu)
     all_courses = courses_for(svc, run_id)
-    series = _series(svc, run_id, p.student_id, all_courses)
+    series = _series(svc, run_id, sid, all_courses)
     trend = _trend(series)
     latest = next((s for s in reversed(series) if s["mark_pct"] is not None), None)
     latest_tri = latest["trimester"] if latest else None
     roll = cohort_rollup(svc, run_id, courses_for(svc, run_id, latest_tri)) if latest_tri else {}
-    me = roll.get(p.student_id, {})
+    me = roll.get(sid, {})
     marks_pop = [r["mark_pct"] for r in roll.values()]
     att_pop = [r["attendance_pct"] for r in roll.values()]
     flags = []
@@ -102,7 +104,7 @@ def _360_impl(svc, p: StudentParams) -> dict:
     if trend["label"] == "declining":
         flags.append(f"marks declining ({trend['delta']} pts)")
     return {"found": True,
-            "student": {"student_id": p.student_id, "name": stu.get("student_name"),
+            "student": {"student_id": sid, "name": stu.get("student_name"),
                         "campus": campus, "batch": batch, "section": stu.get("section_group")},
             "latest_trimester": latest_tri,
             "latest_mark_pct": me.get("mark_pct"), "latest_attendance_pct": me.get("attendance_pct"),

@@ -60,7 +60,12 @@ def _search_impl(svc, p: SearchParams) -> dict:
 
 
 def _report_impl(svc, p: ReportParams) -> dict:
-    row = one_report(svc, p.student_id, campus=p.campus, batch=p.batch, trimester=p.trimester)
+    # one_report keys on the exact enrolment id, so resolve a name -> id first (find_student
+    # accepts either); fall back to the raw value if nothing resolves.
+    from tools.common import find_student
+    resolved = find_student(svc, p.student_id)
+    sid = resolved["student_id"] if resolved else p.student_id
+    row = one_report(svc, sid, campus=p.campus, batch=p.batch, trimester=p.trimester)
     if not row:
         return not_found("report")
     narr = row.get("narrative") or {}
@@ -112,9 +117,11 @@ def _onepager_fetch(svc, p: ReportParams):
     run_id = svc.latest_run(row["campus"], row["batch"])
     if not run_id:
         return None
+    # p.student_id may be a NAME; key the cache lookup on the resolved enrolment id.
+    sid = row["student_id"]
     q = (svc.client.table("onepager_narratives")
          .select("trimester,narrative,created_at")
-         .eq("run_id", run_id).eq("student_id", p.student_id))
+         .eq("run_id", run_id).eq("student_id", sid))
     if p.trimester:
         q = q.eq("trimester", str(p.trimester))
     rows = q.limit(20).execute().data or []
