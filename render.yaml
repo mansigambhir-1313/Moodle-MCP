@@ -26,6 +26,12 @@ services:
         sync: false
       - key: OAUTH_JWT_SIGNING_KEY
         sync: false
+      # MUST be a STABLE, permanent value — the DCR client/token store is encrypted
+      # with a key derived from it, so CHANGING it orphans every registered client
+      # ("client ID not found", forcing every user to re-add the connector). To rotate
+      # safely, set a COMMA-SEPARATED keyset "<new>,<previous>": values encrypt under
+      # the first key and decrypt under any, so no one is logged out during the grace
+      # window. Same rule for OAUTH_JWT_SIGNING_KEY (stable, else tokens die each deploy).
       - key: OAUTH_STORAGE_ENCRYPTION_KEY
         sync: false
       - key: OAUTH_REDIRECT_HOSTS

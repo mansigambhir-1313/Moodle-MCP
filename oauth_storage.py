@@ -93,6 +93,34 @@ class SupabaseKVStore(BaseStore):
         return bool(r.json())
 
 
+_ENCRYPTION_SALT = "moodle-mcp-oauth-storage-encryption-v1"
+
+
+def oauth_fernet(encryption_material: str):
+    """Fernet (single key) or MultiFernet (keyset) for OAuth-storage encryption.
+
+    OAUTH_STORAGE_ENCRYPTION_KEY may be a COMMA-SEPARATED keyset to make key
+    rotation zero-downtime: values are encrypted with the FIRST (current) key and
+    decrypted by trying each key in turn (MultiFernet). To rotate, put the new key
+    first and keep the previous one for a grace period — already-registered clients
+    and issued tokens keep decrypting, so nobody is logged out. A single value
+    derives exactly the same Fernet as before, so existing rows stay readable.
+
+    Returns None when no material is configured. Each key is derived with the same
+    KDF + fixed salt as the original single-key build, so a value that produced a
+    working key before produces the identical key now.
+    """
+    from cryptography.fernet import Fernet, MultiFernet
+    from fastmcp.server.auth.jwt_issuer import derive_jwt_key
+
+    materials = [m.strip() for m in (encryption_material or "").split(",") if m.strip()]
+    if not materials:
+        return None
+    fernets = [Fernet(key=derive_jwt_key(low_entropy_material=m, salt=_ENCRYPTION_SALT))
+               for m in materials]
+    return fernets[0] if len(fernets) == 1 else MultiFernet(fernets)
+
+
 def build_oauth_storage(settings):
     """Build the encrypted store only when both dedicated credentials exist.
 
@@ -107,15 +135,18 @@ def build_oauth_storage(settings):
             log.warning("OAuth persistence disabled until SUPABASE_OAUTH_STORAGE_KEY and "
                         "OAUTH_STORAGE_ENCRYPTION_KEY are configured")
         return None
-    from cryptography.fernet import Fernet
-    from fastmcp.server.auth.jwt_issuer import derive_jwt_key
     from key_value.aio.wrappers.encryption import FernetEncryptionWrapper
 
-    storage_key = derive_jwt_key(
-        low_entropy_material=encryption_material,
-        salt="moodle-mcp-oauth-storage-encryption-v1")
+    fernet = oauth_fernet(encryption_material)
+    key_count = encryption_material.count(",") + 1 if "," in encryption_material else 1
+    if key_count > 1:
+        log.info("OAuth storage: %d-key set — rotation-tolerant decryption enabled", key_count)
     store = SupabaseKVStore(
         url=settings.supabase_url,
         apikey=settings.supabase_anon_key or settings.oauth_storage_key(),
         bearer=settings.oauth_storage_key())
-    return FernetEncryptionWrapper(key_value=store, fernet=Fernet(key=storage_key))
+    # raise_on_decryption_error=False: a row written under a key no longer in the set
+    # (e.g. after a hard key change with no grace key) reads as a MISS, so the client
+    # cleanly re-registers instead of the OAuth endpoint failing on a phantom row.
+    return FernetEncryptionWrapper(key_value=store, fernet=fernet,
+                                   raise_on_decryption_error=False)
