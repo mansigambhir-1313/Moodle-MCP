@@ -102,8 +102,18 @@ class Settings(BaseSettings):
     capture_arguments: bool = Field(default=False, alias="MCP_CAPTURE_ARGUMENTS")
     capture_results: bool = Field(default=False, alias="MCP_CAPTURE_RESULTS")
     capture_client_ip: bool = Field(default=False, alias="MCP_CAPTURE_CLIENT_IP")
-    capture_args_max_bytes: int = Field(default=4096, alias="MCP_CAPTURE_ARGS_MAX_BYTES")
-    capture_result_max_bytes: int = Field(default=8192, alias="MCP_CAPTURE_RESULT_MAX_BYTES")
+    # Generous defaults so a realistic tool call (a full student record, a 50-row
+    # roster, a cohort rollup) is captured COMPLETELY rather than truncated; only a
+    # pathological payload trips the cap (then a size-marked preview is stored).
+    capture_args_max_bytes: int = Field(default=32768, alias="MCP_CAPTURE_ARGS_MAX_BYTES")
+    capture_result_max_bytes: int = Field(default=262144, alias="MCP_CAPTURE_RESULT_MAX_BYTES")
+
+    # OpenTelemetry tracing -> New Relic (EU). Enabled only when NEW_RELIC_LICENSE_KEY
+    # (or an explicit MCP_OTEL_HEADERS override) is set; otherwise the server runs with
+    # zero telemetry and no OTel SDK is loaded. Endpoint defaults to New Relic's EU OTLP.
+    new_relic_license_key: str = Field(default="", alias="NEW_RELIC_LICENSE_KEY")
+    otel_endpoint: str = Field(default="https://otlp.eu01.nr-data.net", alias="MCP_OTEL_ENDPOINT")
+    otel_headers_raw: str = Field(default="", alias="MCP_OTEL_HEADERS")
     # Reject access tokens shorter than this at boot (set ALLOW_WEAK_TOKENS to skip).
     allow_weak_tokens: bool = Field(default=False, alias="ALLOW_WEAK_TOKENS")
     # Bypass resistance (AIA-1013 #4): when GATEWAY_ENFORCED, /mcp only accepts requests
@@ -145,6 +155,21 @@ class Settings(BaseSettings):
 
     def audit_enabled(self) -> bool:
         return bool(self.supabase_audit_key)
+
+    def otel_enabled(self) -> bool:
+        return bool(self.new_relic_license_key.strip() or self.otel_headers_raw.strip())
+
+    def otel_traces_endpoint(self) -> str:
+        return self.otel_endpoint.rstrip("/") + "/v1/traces"
+
+    def otel_headers(self) -> dict:
+        """OTLP exporter headers. An explicit MCP_OTEL_HEADERS ('k=v,k2=v2') wins;
+        otherwise New Relic's ingest header (api-key: <license key>)."""
+        if self.otel_headers_raw.strip():
+            return {k.strip(): v.strip() for k, v in
+                    (kv.split("=", 1) for kv in self.otel_headers_raw.split(",") if "=" in kv)}
+        key = self.new_relic_license_key.strip()
+        return {"api-key": key} if key else {}
 
     def oauth_redirect_hosts(self) -> list[str]:
         return [host.strip().lower() for host in self.oauth_redirect_hosts_raw.split(",")

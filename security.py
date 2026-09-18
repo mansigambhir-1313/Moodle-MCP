@@ -421,6 +421,49 @@ class TransportGuard:
 
 
 # --- FastMCP per-call middleware: rate limit + audit + error boundary --------
+try:
+    from opentelemetry import trace as _otel_trace
+    from opentelemetry.trace import SpanKind as _SpanKind
+    from opentelemetry.trace import StatusCode as _StatusCode
+except Exception:  # noqa: BLE001 — OTel API optional; instrumentation no-ops without it
+    _otel_trace = _SpanKind = _StatusCode = None
+
+
+def _start_tool_span(name: str):
+    """A SERVER span for a tool call, or None when OTel isn't importable. With no
+    provider installed (telemetry disabled) this is a cheap non-recording span. The
+    tracer is fetched lazily so it always uses whatever provider setup_telemetry set."""
+    if _otel_trace is None:
+        return None
+    try:
+        span = _otel_trace.get_tracer("moodle-mcp").start_span(
+            f"mcp.tool.{name}", kind=_SpanKind.SERVER)
+        span.set_attribute("mcp.tool", name)
+        return span
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _end_tool_span(span, outcome: str, error_code, scope) -> None:
+    if span is None:
+        return
+    try:
+        span.set_attribute("mcp.outcome", outcome)
+        if error_code:
+            span.set_attribute("mcp.error_code", error_code)
+        if scope:
+            span.set_attribute("mcp.campus_scope", scope)
+        if outcome == "failure":
+            span.set_status(_StatusCode.ERROR, error_code or "error")
+    except Exception:  # noqa: BLE001
+        pass
+    finally:
+        try:
+            span.end()
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def build_middleware(rate_limit: int, window: float):
     from fastmcp.exceptions import ToolError
     from fastmcp.server.dependencies import get_http_headers
@@ -481,51 +524,63 @@ def build_middleware(rate_limit: int, window: float):
             # Capture context — enriched into metadata only when the MCP_CAPTURE_* flags
             # are on (see audit_store.build_metadata); otherwise these are inert.
             cap = {"arguments": _args(context), "source_ip": _source_ip(headers)}
+            span = _start_tool_span(name)          # None unless OTel tracing is enabled
+            outcome, err = "failure", "error"      # finally records the final outcome
             from audit_store import record_tool_call
-            if settings.require_audit:
-                recorded = await record_tool_call(
-                    tool=name, principal=principal, ok=None, started=started,
-                    headers=headers, scope=_scope(context), **cap)
-                if not recorded:
-                    raise ToolError(MSG_AUDIT)
-            ok, _retry = await limiter.allow(_rate_key())
-            if not ok:
-                await record_tool_call(tool=name, principal=principal, ok=False,
-                                       started=started, headers=headers,
-                                       scope=_scope(context), error_code="rate_limited", **cap)
-                raise ToolError(MSG_RATE)
             try:
-                result = await call_next(context)
-                await record_tool_call(tool=name, principal=principal, ok=True,
-                                       started=started, headers=headers,
-                                       scope=_scope(context), result=result, **cap)
-                return result
-            except ToolError:
-                await record_tool_call(tool=name, principal=principal, ok=False,
-                                       started=started, headers=headers,
-                                       scope=_scope(context), error_code="tool_error", **cap)
-                raise  # already a clean, caller-safe message
-            except ValidationError as e:
-                # Caller sent bad/missing parameters. Tell them WHICH — this is
-                # their own input, not an internal detail — so an agent can fix
-                # the call instead of uselessly retrying a "server error".
-                first = (e.errors() or [{}])[0]
-                loc = ".".join(str(x) for x in first.get("loc", ())) or "params"
-                await record_tool_call(tool=name, principal=principal, ok=False,
-                                       started=started, headers=headers,
-                                       scope=_scope(context), error_code="bad_params", **cap)
-                raise ToolError(f"Invalid parameters — {loc}: "
-                                f"{first.get('msg', 'validation failed')}")
-            except PermissionError:
-                await record_tool_call(tool=name, principal=principal, ok=False,
-                                       started=started, headers=headers,
-                                       scope=_scope(context), error_code="unauthorized", **cap)
-                raise ToolError(MSG_DENIED)
-            except Exception:  # noqa: BLE001 - the point is to never leak internals
-                log.exception("tool %s failed", name)
-                await record_tool_call(tool=name, principal=principal, ok=False,
-                                       started=started, headers=headers,
-                                       scope=_scope(context), error_code="internal_error", **cap)
-                raise ToolError(MSG_ERROR)
+                if settings.require_audit:
+                    recorded = await record_tool_call(
+                        tool=name, principal=principal, ok=None, started=started,
+                        headers=headers, scope=_scope(context), **cap)
+                    if not recorded:
+                        err = "audit_unavailable"
+                        raise ToolError(MSG_AUDIT)
+                ok, _retry = await limiter.allow(_rate_key())
+                if not ok:
+                    await record_tool_call(tool=name, principal=principal, ok=False,
+                                           started=started, headers=headers,
+                                           scope=_scope(context), error_code="rate_limited", **cap)
+                    err = "rate_limited"
+                    raise ToolError(MSG_RATE)
+                try:
+                    result = await call_next(context)
+                    await record_tool_call(tool=name, principal=principal, ok=True,
+                                           started=started, headers=headers,
+                                           scope=_scope(context), result=result, **cap)
+                    outcome, err = "success", None
+                    return result
+                except ToolError:
+                    await record_tool_call(tool=name, principal=principal, ok=False,
+                                           started=started, headers=headers,
+                                           scope=_scope(context), error_code="tool_error", **cap)
+                    err = "tool_error"
+                    raise  # already a clean, caller-safe message
+                except ValidationError as e:
+                    # Caller sent bad/missing parameters. Tell them WHICH — this is
+                    # their own input, not an internal detail — so an agent can fix
+                    # the call instead of uselessly retrying a "server error".
+                    first = (e.errors() or [{}])[0]
+                    loc = ".".join(str(x) for x in first.get("loc", ())) or "params"
+                    await record_tool_call(tool=name, principal=principal, ok=False,
+                                           started=started, headers=headers,
+                                           scope=_scope(context), error_code="bad_params", **cap)
+                    err = "bad_params"
+                    raise ToolError(f"Invalid parameters — {loc}: "
+                                    f"{first.get('msg', 'validation failed')}")
+                except PermissionError:
+                    await record_tool_call(tool=name, principal=principal, ok=False,
+                                           started=started, headers=headers,
+                                           scope=_scope(context), error_code="unauthorized", **cap)
+                    err = "unauthorized"
+                    raise ToolError(MSG_DENIED)
+                except Exception:  # noqa: BLE001 - the point is to never leak internals
+                    log.exception("tool %s failed", name)
+                    await record_tool_call(tool=name, principal=principal, ok=False,
+                                           started=started, headers=headers,
+                                           scope=_scope(context), error_code="internal_error", **cap)
+                    err = "internal_error"
+                    raise ToolError(MSG_ERROR)
+            finally:
+                _end_tool_span(span, outcome, err, _scope(context))
 
     return GuardMiddleware()
