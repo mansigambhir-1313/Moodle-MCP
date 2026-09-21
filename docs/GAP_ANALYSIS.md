@@ -9,13 +9,17 @@ Legend: **REQ** = requirement/expectation · **NOW** = shipped/enforced today ·
 
 ---
 
-## 🔴 CRITICAL
+## 🔵 ACCEPTED RISK (data-owner decision — 2026-09-21)
 
 ### G1. No role-based access — every Jaipuria ID (incl. ~2,800 students) has all-campus, faculty-level read + report generation
-- **REQ** (AIA-1012/1013/1016): "faculty/student/admin tool permissions, **deny-by-default**, immediate revocation, prove **allowed AND denied** journeys, per-tool RBAC through the gateway."
+- **REQ** (AIA-1012/1013/1016 as originally written): "faculty/student/admin tool permissions, **deny-by-default**, immediate revocation, prove **allowed AND denied** journeys, per-tool RBAC through the gateway."
 - **NOW**: `security.principal_from_claims` short-circuits any `jaipuria.ac.in` (+ subdomain) account to `campuses=None` (**all campuses**) *before* the student-roster deny — so the deny applies only to non-Jaipuria domains. Verified: students (who are `@jaipuria.ac.in`) get the same all-campus grant as faculty. `whoami` exposes no role; there is no faculty/student/admin distinction in the MCP.
-- **GAP**: (a) **Privacy exposure** — any of ~2,800 students can read any other student's marks/attendance across all 5 campuses, and can `create_report` for anyone. (b) **Diverges from the epic**: the shipped model is the opposite of deny-by-default; there are **no denied journeys to demonstrate** for Jaipuria IDs, which Vaibhav's 5 Oct adversarial review explicitly checks. The gateway (AIA-1013) that would *enforce* RBAC is built but **not deployed**.
-- **This is a deliberate data-owner choice ("open to all for now")** — but it must be reconciled with the epic before launch: either (i) formally rescope the epic's RBAC acceptance, or (ii) add student self-scoping (in-MCP: detect roster email → scope to own record) and/or deploy the gateway for per-tool RBAC. Until then, treat student PII cross-exposure as a known, accepted risk in writing.
+- **Exposure**: any of ~2,800 students can read any other student's marks/attendance across all 5 campuses, and can `create_report` for anyone.
+- **DECISION (2026-09-21):** the data owner has **accepted this risk** and chosen to keep all-Jaipuria all-access for now (no in-MCP student self-scope, no gateway gating on this MCP). This is a conscious, informed choice made after the exposure was flagged. Consequences recorded so the epic and the 5 Oct review assess the **actual** model, not the original RBAC intent:
+  - The Moodle MCP's per-user RBAC / deny-by-default / "denied journeys" acceptance in AIA-1012 is **rescoped**: this MCP intentionally grants uniform all-campus read + `create_report` to every verified Jaipuria account. The only enforced boundaries are the **domain gate** (verified `jaipuria.ac.in`) and **read-only-ness** of all tools except `create_report`.
+  - Per-tool RBAC (AIA-1013/1016 gateway) remains a **platform-level** capability for other/future MCPs; it is not gating this MCP by decision.
+  - Vaibhav's adversarial review should validate the domain gate, the read-only surface, `create_report` scoping to in-grant targets, and audit attributability — **not** student-vs-faculty denial, which is intentionally absent here.
+  - Residual controls that still matter under this model: audit every access (G2), publish a privacy notice + retention (G3), and cost-cap `create_report` (G4).
 
 ---
 
@@ -69,5 +73,10 @@ Legend: **REQ** = requirement/expectation · **NOW** = shipped/enforced today ·
 
 ---
 
-## The one to decide first
-**G1** is both a live privacy exposure and the item that most directly contradicts the epic's stated acceptance criteria (and Vaibhav's 5 Oct review). Everything else is executable ops/eng work already planned; G1 is a **decision**: accept student cross-exposure in writing and rescope the RBAC acceptance, or add student self-scoping / deploy the gateway before the 5,000-user launch.
+## Status of the headline decision
+**G1 is decided (2026-09-21): accepted + rescoped** — all-Jaipuria all-access stays; the
+RBAC/denied-journey acceptance for *this* MCP is formally rescoped (see G1 above), and the
+decision is recorded on epic AIA-1012. The remaining gaps (G2–G12) are executable ops/eng
+work already tracked in `PRODUCTION_READINESS.md`. Under the accepted model, the highest-
+value residual controls are **audit (G2)**, **privacy notice + retention (G3)**, and a
+**`create_report` cost cap (G4)** — because every user can read everything and generate reports.
