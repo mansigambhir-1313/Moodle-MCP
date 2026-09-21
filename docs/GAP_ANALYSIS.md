@@ -85,3 +85,17 @@ decision is recorded on epic AIA-1012. The remaining gaps (G2–G12) are executa
 work already tracked in `PRODUCTION_READINESS.md`. Under the accepted model, the highest-
 value residual controls are **audit (G2)**, **privacy notice + retention (G3)**, and a
 **`create_report` cost cap (G4)** — because every user can read everything and generate reports.
+
+---
+
+## Fresh security + data-capture pass (2026-09-21)
+
+### 🟠 G13. JChat lets every USER add their own MCP servers — data-exfiltration surface
+- **Found**: `librechat.railway.yaml` `interface.mcpServers: { use: true, create: true }`, synced into the USER role at startup (PR #23 + `MCPServersRegistry.addServer`). So **every** USER (all Jaipuria staff, and students in Phase 2) can register an **arbitrary MCP server** from the UI.
+- **Risk**: a user can point JChat at a **malicious/external MCP** and have their conversation context / tool outputs (incl. any student data pulled via the Moodle MCP) sent to an endpoint they control — an exfiltration/SSRF-shaped surface at 5,000-user scale. Not specific to our MCP, but it widens the blast radius of the open-access Moodle data.
+- **Recommendation**: set `interface.mcpServers.create: false` for USER (keep `use: true`) so only admins register servers, **or** gate `create` behind a faculty/admin sub-role. Decision for Rajika/data-owner. *(JChat config — 1 line)*
+
+### 🟡 G14. Only tool *calls* are audited — connects, `initialize`, and `tools/list` leave no trace
+- **Found**: `GuardMiddleware` implements only `on_call_tool`; there is no `on_list_tools`/`initialize` hook. So a user who connects and enumerates tools but calls nothing is **not recorded**, and discovery isn't captured.
+- **Gap vs AIA-1210** ("connection counts"): the audit ledger counts tool *invocations*, not *connections*. Connection lifecycle is only partially visible via the OAuth `clients`/`sessions` rows written as a side effect of the first tool call. If true connection counts / discovery events are required, add a `list_tools`/session-start capture (middleware hook or a transport-level event) — the OTel `mcp.auth` span already traces auth, so connection-event capture is the remaining piece.
+- Lower priority than G2 (turn recording on at all), but it's the difference between "who called a tool" and "who connected."
