@@ -25,15 +25,15 @@ Legend: **REQ** = requirement/expectation · **NOW** = shipped/enforced today ·
 
 ## 🟠 HIGH
 
-### G2. Recording is not actually live (AIA-1210)
+### G2. Recording — backend now LIVE (2026-09-21); awaiting the audit key + flags
 - **REQ**: user/email-attributable traces of every MCP call, retained with defined access.
-- **NOW**: capture *code* shipped; but the `mcp_audit` backend was **never applied to prod** (only `mcp_oauth_kv` exists), `SUPABASE_AUDIT_KEY` + `MCP_CAPTURE_*` are unset, and `render.yaml` capture-ON is uncommitted.
-- **GAP**: zero durable recording today. Enablement is staged (`scripts/RECORDING_ENABLEMENT.md`) but unexecuted (ops). Until done, AIA-1210's "who connected, when, what" cannot be shown.
+- **DONE**: the `mcp_audit` backend is **now applied to prod** (`mcp_audit.tool_calls` + `record_mcp_tool_call` RPC + `mcp_audit_writer` role + `v_activity` view — verified). Capture code + connection events (`on_initialize`) are on `main`.
+- **REMAINING (ops, 2 env steps)**: set `SUPABASE_AUDIT_KEY` (mint via `scripts/mint_audit_jwt.py`) + `MCP_AUDIT_HMAC_KEY`, and the measured `MCP_CAPTURE_*` flags (identity/arguments/client_ip = true, results = false) + `MCP_TRUST_PROXY_HEADERS`. The DB is ready; nothing persists until the key is set.
 
-### G3. Recording student PII with no consent mechanism and unscheduled retention
-- **REQ**: lawful, governed capture of identity + which student records each user viewed + returned marks.
-- **NOW**: `mcp_audit.consents` table exists in the migration but **no code reads/writes it**; the 180-day `purge_expired_mcp_security_data()` exists but is **not scheduled** (no pg_cron); no privacy notice.
-- **GAP**: no consent flow, no automatic retention enforcement, no published notice — for a highly sensitive joined dataset (who-viewed-whom + marks) covering minors-adjacent student data at scale.
+### G3. Governance — retention SCHEDULED + notice drafted (2026-09-21)
+- **REQ**: lawful, governed capture with defined retention + a notice.
+- **DONE**: 180-day retention is now **auto-enforced** — `pg_cron` job `mcp-security-retention-purge` runs `purge_expired_mcp_security_data()` daily at 03:00 UTC (verified active). Privacy notice **drafted**: `docs/PRIVACY_NOTICE.md` (measured level — identity + action + IP + connections, no result payloads).
+- **REMAINING**: publish the notice (institution/legal); the `mcp_audit.consents` table is present but a consent *flow* is still unwired (optional under the accepted model).
 
 ### G4. Hosting + scale not launch-ready
 - **NOW**: live Render service still on the **free plan** (spin-down) despite `render.yaml: standard`; `MCP_REDIS_URL` unset (in-process rate limiter diverges across instances); Google `tokeninfo` called per request (now traced via `mcp.auth`, but **not cached/mitigated**); no load test.
