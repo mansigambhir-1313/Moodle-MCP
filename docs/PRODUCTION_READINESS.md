@@ -38,6 +38,12 @@ the per-IP cap substantially for the trusted JChat origin **or** cut traffic ove
 governed gateway (`GATEWAY_ENFORCED`, single trusted ingress). Per-principal 90/min
 still bounds each user. *(ops + eng · 1 day)*
 
+**0.4a `create_report` cost cap (done 2026-09-21).** Per-principal budget on the one
+money-spending tool (`_enforce_report_budget`, default 60/user/hour via
+`MCP_CREATE_REPORT_LIMIT` / `_WINDOW_SECONDS`), so no single account can drive runaway
+LLM generation under open access. Redis-backed when `MCP_REDIS_URL` is set (so set it —
+0.4 — for the cap to hold across instances). *(eng — shipped)*
+
 **0.5 Governance sign-off for all-access + full recording.** Every `jaipuria.ac.in`
 account (incl. ~2,800 students) has **all-campus, faculty-level** access, and recording
 now stores **real identity + which student records each person viewed + the marks

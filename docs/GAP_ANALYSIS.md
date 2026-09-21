@@ -36,8 +36,9 @@ Legend: **REQ** = requirement/expectation · **NOW** = shipped/enforced today ·
 - **GAP**: no consent flow, no automatic retention enforcement, no published notice — for a highly sensitive joined dataset (who-viewed-whom + marks) covering minors-adjacent student data at scale.
 
 ### G4. Hosting + scale not launch-ready
-- **NOW**: live Render service still on the **free plan** (spin-down) despite `render.yaml: standard`; `MCP_REDIS_URL` unset (in-process rate limiter diverges across instances); Google `tokeninfo` called per request (now traced via `mcp.auth`, but **not cached/mitigated**); no load test; `create_report` has **no per-user cost/quota cap** (any user can drive model spend generating reports for any student).
-- **GAP**: cannot serve 5,000 concurrently; horizontal scaling breaks rate limiting; auth latency + model cost unbounded.
+- **NOW**: live Render service still on the **free plan** (spin-down) despite `render.yaml: standard`; `MCP_REDIS_URL` unset (in-process rate limiter diverges across instances); Google `tokeninfo` called per request (now traced via `mcp.auth`, but **not cached/mitigated**); no load test.
+- **PARTIALLY CLOSED (2026-09-21):** `create_report` now has a **per-principal budget** (`_enforce_report_budget`, default 60/user/hour via `MCP_CREATE_REPORT_LIMIT`/`_WINDOW_SECONDS`, Redis-backed when configured) — bounds worst-case LLM spend/load under the open-access model. Verified by `tests/test_report_budget.py`.
+- **GAP (remaining)**: cannot serve 5,000 concurrently (free plan); horizontal scaling still needs `MCP_REDIS_URL` for a shared limiter (incl. the new report budget); auth latency uncached; no load test.
 
 ### G5. Report short-links may expose student PII if leaked
 - **REQ** (AIA-1355): "another user cannot retrieve an artifact by guessing or replaying its URL."

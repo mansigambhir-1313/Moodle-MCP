@@ -79,6 +79,14 @@ class Settings(BaseSettings):
     # Rate limiting — tool calls per token per window (bounded, in-process)
     rate_limit: int = Field(default=90, alias="MCP_RATE_LIMIT")
     rate_window_seconds: int = Field(default=60, alias="MCP_RATE_WINDOW_SECONDS")
+    # Dedicated per-principal budget for create_report — the one tool that spends money
+    # (an LLM generation on a cache miss) and, under the open-access model, can be
+    # invoked for ANY student by ANY verified user. Bounds worst-case model cost/load
+    # well below the generic 90/min tool limit. Generous enough for a professor to
+    # generate a whole class in one sitting; low enough to stop runaway/abusive loops.
+    create_report_limit: int = Field(default=60, alias="MCP_CREATE_REPORT_LIMIT")
+    create_report_window_seconds: int = Field(
+        default=3600, alias="MCP_CREATE_REPORT_WINDOW_SECONDS")
     # Transport hardening: max /mcp request body, and a per-IP pre-auth request cap
     # per window (blunts unauthenticated floods / token-guessing before auth).
     max_body_bytes: int = Field(default=262144, alias="MCP_MAX_BODY_BYTES")

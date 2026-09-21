@@ -27,6 +27,42 @@ log = logging.getLogger("moodle-mcp.actions")
 MSG_UNCONFIGURED = ("Report generation is not configured on this server "
                     "(AGENT_API_BASE is unset). Ask the administrator to enable it.")
 MSG_AGENT_DOWN = "The report service could not be reached right now. Please retry shortly."
+MSG_REPORT_BUDGET = ("You've reached the report-generation limit for now — report "
+                     "generation is rate-limited per user to protect the service. "
+                     "Please try again a little later.")
+
+# Per-principal budget for the (money-spending) generation path. Redis-backed when
+# MCP_REDIS_URL is set, so the cap holds across instances; in-process otherwise.
+_report_limiter = None
+
+
+def _budget_key(svc) -> str:
+    """Stable per-user key for the report budget — the signed-in identity, hashed so a
+    raw email never sits in the limiter's key map. Falls back to a shared 'anon' bucket."""
+    principal = getattr(svc, "principal", None) or {}
+    ident = principal.get("email") or principal.get("sub") or principal.get("name") or "anon"
+    return hashlib.sha256(str(ident).strip().lower().encode()).hexdigest()[:24]
+
+
+async def _enforce_report_budget(svc) -> None:
+    """Raise ToolError when the caller has exhausted their create_report budget. Fail-open
+    on limiter error — a budgeting hiccup must not block a legitimate report."""
+    global _report_limiter
+    if settings.create_report_limit <= 0:            # 0/negative disables the cap
+        return
+    try:
+        if _report_limiter is None:
+            from security import SharedRateLimiter
+            _report_limiter = SharedRateLimiter(
+                settings.create_report_limit, settings.create_report_window_seconds,
+                maxkeys=settings.rate_limit_max_keys, redis_url=settings.redis_url,
+                prefix="moodle-mcp:create_report")
+        allowed, _retry = await _report_limiter.allow(_budget_key(svc))
+    except Exception:  # noqa: BLE001 — never fail a report because the limiter erred
+        log.warning("create_report budget check failed open", exc_info=True)
+        return
+    if not allowed:
+        raise ToolError(MSG_REPORT_BUDGET)
 # Generation includes one LLM call (~15s) when the insight is not yet cached.
 _TIMEOUT = httpx.Timeout(connect=10.0, read=120.0, write=10.0, pool=10.0)
 # Response fields passed through to the caller — never internal paths. narrative +
@@ -246,6 +282,7 @@ async def _create_impl(svc, p: CreateReportParams) -> dict:
         raise PermissionError(MSG_DENIED)  # explicit campus outside the caller's grant
     if not settings.report_generation_enabled():
         raise ToolError(MSG_UNCONFIGURED)
+    await _enforce_report_budget(svc)  # per-user cost cap before any agent round-trip
     from guardrails import enrolled_no_data
     from tools.common import (cached_report_students, find_student, graded_scopes,
                               random_gradeable_students, roster_member)
