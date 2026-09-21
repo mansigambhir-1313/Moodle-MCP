@@ -40,10 +40,14 @@ Legend: **REQ** = requirement/expectation · **NOW** = shipped/enforced today ·
 - **PARTIALLY CLOSED (2026-09-21):** `create_report` now has a **per-principal budget** (`_enforce_report_budget`, default 60/user/hour via `MCP_CREATE_REPORT_LIMIT`/`_WINDOW_SECONDS`, Redis-backed when configured) — bounds worst-case LLM spend/load under the open-access model. Verified by `tests/test_report_budget.py`.
 - **GAP (remaining)**: cannot serve 5,000 concurrently (free plan); horizontal scaling still needs `MCP_REDIS_URL` for a shared limiter (incl. the new report budget); auth latency uncached; no load test.
 
-### G5. Report short-links may expose student PII if leaked
+### G5. Report links — VERIFIED acceptable (public capability links by design), one TTL knob
 - **REQ** (AIA-1355): "another user cannot retrieve an artifact by guessing or replaying its URL."
-- **NOW**: short-links are SHA-256-hashed + expiring (good vs guessing). But it's unverified whether the link endpoint requires **authentication** or is public-with-expiry.
-- **GAP**: if the report short-link is publicly resolvable (unauth) within its TTL, a leaked/forwarded link exposes that student's full report to anyone until expiry. **Verify the link endpoint's auth**; if public, that's a PII exposure to reconcile. The guess/replay adversarial test is also not yet executed.
+- **INVESTIGATED (2026-09-21, `moodle-agent` `app/web/{tokens,shortlinks}.py` + `app/api.py`):** report links are intentionally **public — the token IS the credential** (students have no login). This is not a gap; the guess/replay requirement is met by construction:
+  - **Unforgeable / non-enumerable**: `/r`·`/rv` are **Fernet** tokens (AES-128-CBC + HMAC-SHA256; a tampered token fails to decrypt); `/s` is a **192-bit** random id stored only as a SHA-256 digest. You cannot craft or increment another student's link.
+  - **Per-student scoped**: each token/id resolves to exactly one `{campus,batch,trimester,student_id}` — no IDOR pivot.
+  - **Expiring + revocable**: Fernet TTL + per-row `expires_at`/`revoked_at`; rotating `REPORT_LINK_SECRET` revokes every outstanding `/r`·`/rv` link at once.
+  - **No oracle / hardened page**: every invalid/expired/tampered link → generic 404; per-IP rate limit on all three routes; report page served `Cache-Control: private, no-store`, `X-Frame-Options: DENY`, no-script CSP, no PII in the URL, host-guarded.
+- **Residual (not a bug, worth tuning):** (a) **TTL is 90 days** (`REPORT_LINK_TTL_DAYS`) — long for student PII; consider 7–30 days so a forwarded link lapses sooner. (b) It remains **bearer-of-link** (anyone with the URL sees that one student's report until expiry) — inherent to a login-less share link; revocation exists. (c) Confirm **`REPORT_LINK_SECRET` is set + stable** in prod (unset fails closed; rotating it invalidates all live links — same discipline as the OAuth keys).
 
 ---
 
