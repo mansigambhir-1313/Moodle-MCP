@@ -530,6 +530,23 @@ def build_middleware(rate_limit: int, window: float):
             return None
 
     class GuardMiddleware(Middleware):
+        async def on_initialize(self, context, call_next):
+            # Record session establishment so the audit ledger reflects CONNECTIONS, not
+            # only tool invocations (AIA-1210 connection counts / user-email traceability).
+            # Best-effort and post-hoc: a connect is never blocked or failed by auditing.
+            principal = _principal()
+            headers = get_http_headers() or {}
+            started = time.monotonic()
+            result = await call_next(context)
+            try:
+                from audit_store import record_tool_call
+                await record_tool_call(tool="connect", principal=principal, ok=True,
+                                       started=started, headers=headers,
+                                       source_ip=_source_ip(headers))
+            except Exception:  # noqa: BLE001 — connection audit must never break a connect
+                log.warning("connect audit failed", exc_info=True)
+            return result
+
         async def on_call_tool(self, context, call_next):
             name = getattr(context.message, "name", "?")
             principal = _principal()

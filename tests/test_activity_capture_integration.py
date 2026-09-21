@@ -193,5 +193,38 @@ check("attempt (ok=None) recorded before success (ok=True)", outcomes[:2] == [No
 check("attempt record has no result yet", CALLS[0].get("result") is None)
 _set(require_audit=False)
 
+print("\n[ 4. on_initialize records a 'connect' event (AIA-1210 connection counts) ]")
+CALLS.clear()
+
+
+async def _init_next(ctx):
+    return {"protocolVersion": "2025-06-18"}   # a normal initialize result
+
+init_res = asyncio.run(mw.on_initialize(_Ctx(), _init_next))
+conn = [c for c in CALLS if c.get("tool") == "connect"]
+check("a connect event is recorded on initialize", len(conn) == 1 and conn[0].get("ok") is True)
+check("connect event carries identity + source_ip (capture on)",
+      conn[0].get("principal", {}).get("email") == "faculty@jaipuria.ac.in"
+      and conn[0].get("source_ip") == "10.0.0.1")
+check("connect never carries args/result", conn[0].get("arguments") is None and conn[0].get("result") is None)
+check("initialize result returned unchanged", init_res == {"protocolVersion": "2025-06-18"})
+
+print("\n[ 4b. a failing audit never breaks the connect ]")
+CALLS.clear()
+
+
+async def _boom_record(**kw):
+    raise RuntimeError("audit down")
+
+audit_store.record_tool_call = _boom_record
+ok = True
+try:
+    r = asyncio.run(mw.on_initialize(_Ctx(), _init_next))
+    ok = (r == {"protocolVersion": "2025-06-18"})
+except Exception:
+    ok = False
+audit_store.record_tool_call = _fake_record   # restore
+check("connect succeeds even if the audit write raises", ok)
+
 print(f"\n{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)
