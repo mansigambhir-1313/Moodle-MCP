@@ -122,6 +122,20 @@ class Settings(BaseSettings):
     new_relic_license_key: str = Field(default="", alias="NEW_RELIC_LICENSE_KEY")
     otel_endpoint: str = Field(default="https://otlp.eu01.nr-data.net", alias="MCP_OTEL_ENDPOINT")
     otel_headers_raw: str = Field(default="", alias="MCP_OTEL_HEADERS")
+    # Signal toggles (all inert unless otel_enabled()). Traces + metrics on by default;
+    # logs OFF by default because app logs can carry operational detail we deliberately
+    # keep out of New Relic — opt in with MCP_OTEL_LOGS=true only after confirming the
+    # log stream is PII-free (httpx access-token URLs are already quieted at boot).
+    otel_traces: bool = Field(default=True, alias="MCP_OTEL_TRACES")
+    otel_metrics: bool = Field(default=True, alias="MCP_OTEL_METRICS")
+    otel_logs: bool = Field(default=False, alias="MCP_OTEL_LOGS")
+    # Metric export cadence (ms). New Relic recommends ≥ 5s; 60s is plenty for
+    # host/process gauges + tool counters and keeps ingest/cost low at 5k users.
+    otel_metric_interval_ms: int = Field(default=60000, alias="MCP_OTEL_METRIC_INTERVAL_MS")
+    # Distinguishes one running instance from another once horizontally scaled — set to
+    # the platform's instance/dyno id, else the hostname is used. Attached as
+    # service.instance.id on every span/metric/log so a single bad node is isolable.
+    service_instance_id: str = Field(default="", alias="MCP_SERVICE_INSTANCE_ID")
     # Reject access tokens shorter than this at boot (set ALLOW_WEAK_TOKENS to skip).
     allow_weak_tokens: bool = Field(default=False, alias="ALLOW_WEAK_TOKENS")
     # Bypass resistance (AIA-1013 #4): when GATEWAY_ENFORCED, /mcp only accepts requests
@@ -169,6 +183,23 @@ class Settings(BaseSettings):
 
     def otel_traces_endpoint(self) -> str:
         return self.otel_endpoint.rstrip("/") + "/v1/traces"
+
+    def otel_metrics_endpoint(self) -> str:
+        return self.otel_endpoint.rstrip("/") + "/v1/metrics"
+
+    def otel_logs_endpoint(self) -> str:
+        return self.otel_endpoint.rstrip("/") + "/v1/logs"
+
+    def otel_instance_id(self) -> str:
+        """Stable per-instance id for service.instance.id. Explicit override wins;
+        otherwise the hostname (container/dyno id on most platforms)."""
+        if self.service_instance_id.strip():
+            return self.service_instance_id.strip()
+        try:
+            import socket
+            return socket.gethostname() or "unknown"
+        except Exception:  # noqa: BLE001
+            return "unknown"
 
     def otel_headers(self) -> dict:
         """OTLP exporter headers. An explicit MCP_OTEL_HEADERS ('k=v,k2=v2') wins;

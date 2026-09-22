@@ -131,23 +131,32 @@ async def get_authenticated_service():
     from fastmcp.server.dependencies import get_http_headers
 
     import telemetry
-    span = telemetry.start_span("mcp.auth")   # None unless OTel tracing is enabled
+    _headers = get_http_headers() or {}
+    # Parent to the caller's (JChat/Claude) span when it propagated a W3C traceparent.
+    span = telemetry.start_span("mcp.auth", _headers)  # None unless OTel tracing is enabled
     mode = "oauth" if settings.oauth_enabled() else "static"
     try:
         principal = resolve_oauth_principal() if settings.oauth_enabled() else None
         if principal is None:
-            principal = resolve_principal(bearer_of(get_http_headers() or {}))
+            principal = resolve_principal(bearer_of(_headers))
         if not principal:
             raise PermissionError("missing or invalid access token")
         svc = create_service(principal)
         telemetry.end_span(span, "success", None, {"mcp.auth.mode": mode})
+        telemetry.record_auth_metric(mode, "success")
         span = None
         return svc
     except PermissionError:
         telemetry.end_span(span, "failure", "unauthorized", {"mcp.auth.mode": mode})
+        telemetry.record_auth_metric(mode, "failure")
         span = None
         raise
     finally:
+        # span is only non-None here on the unexpected-exception path (success and
+        # PermissionError null it first) — so this counts JUST the auth_error case,
+        # no double-count of the outcomes already recorded above.
+        if span is not None:
+            telemetry.record_auth_metric(mode, "failure")
         telemetry.end_span(span, "failure", "auth_error", {"mcp.auth.mode": mode})
 
 
@@ -177,6 +186,15 @@ reports.register(mcp, get_authenticated_service)      # generated narrative repo
 actions.register(mcp, get_authenticated_service)      # create_report (the one write-path tool)
 
 app = mcp.http_app()
+
+# Flush buffered spans/metrics/logs on graceful shutdown. atexit (registered in
+# setup_telemetry) is the belt, but doesn't fire on every container-kill path; this
+# ASGI-lifespan hook is the braces so a redeploy/SIGTERM doesn't drop the last batch
+# and under-count the error/throughput/latency signal around every deploy. The ASGI
+# wrappers below forward the lifespan scope untouched, so this still runs.
+from telemetry import shutdown_telemetry  # noqa: E402
+
+app.add_event_handler("shutdown", shutdown_telemetry)
 
 
 async def health_check(request: Request) -> JSONResponse:

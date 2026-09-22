@@ -432,16 +432,20 @@ except Exception:  # noqa: BLE001 — OTel API optional; instrumentation no-ops 
     _otel_trace = _SpanKind = _StatusCode = None
 
 
-def _start_tool_span(name: str):
+def _start_tool_span(name: str, headers=None):
     """A SERVER span for a tool call, or None when OTel isn't importable. With no
     provider installed (telemetry disabled) this is a cheap non-recording span. The
-    tracer is fetched lazily so it always uses whatever provider setup_telemetry set."""
+    tracer is fetched lazily so it always uses whatever provider setup_telemetry set.
+    When ``headers`` carry a W3C traceparent, the span is parented to the caller's
+    (JChat/Claude) span so a distributed trace stitches end-to-end."""
     if _otel_trace is None:
         return None
     span = None
     try:
+        import telemetry
+        ctx = telemetry.extract_context(headers) if headers else None
         span = _otel_trace.get_tracer("moodle-mcp").start_span(
-            f"mcp.tool.{name}", kind=_SpanKind.SERVER)
+            f"mcp.tool.{name}", kind=_SpanKind.SERVER, context=ctx)
         span.set_attribute("mcp.tool", name)
         return span
     except Exception:  # noqa: BLE001
@@ -454,7 +458,15 @@ def _start_tool_span(name: str):
         return None
 
 
-def _end_tool_span(span, outcome: str, error_code, scope) -> None:
+def _end_tool_span(span, outcome: str, error_code, scope, duration_s=None, tool="?") -> None:
+    # Emit the aggregated tool metric regardless of whether a span exists — metrics are
+    # a separate signal (host/process gauges + counters) that must not be gated on the
+    # tracer, and aren't subject to trace sampling.
+    try:
+        import telemetry
+        telemetry.record_tool_metric(tool, outcome, error_code, scope, duration_s)
+    except Exception:  # noqa: BLE001
+        pass
     if span is None:
         return
     try:
@@ -555,7 +567,8 @@ def build_middleware(rate_limit: int, window: float):
             # Capture context — enriched into metadata only when the MCP_CAPTURE_* flags
             # are on (see audit_store.build_metadata); otherwise these are inert.
             cap = {"arguments": _args(context), "source_ip": _source_ip(headers)}
-            span = _start_tool_span(name)          # None unless OTel tracing is enabled
+            # headers → parent trace context (W3C traceparent) when the caller sent one.
+            span = _start_tool_span(name, headers)  # None unless OTel tracing is enabled
             outcome, err = "failure", "error"      # finally records the final outcome
             from audit_store import record_tool_call
             try:
@@ -618,6 +631,7 @@ def build_middleware(rate_limit: int, window: float):
                     err = "internal_error"
                     raise ToolError(MSG_ERROR)
             finally:
-                _end_tool_span(span, outcome, err, _scope(context))
+                _end_tool_span(span, outcome, err, _scope(context),
+                               duration_s=time.monotonic() - started, tool=name)
 
     return GuardMiddleware()

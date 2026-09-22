@@ -8,6 +8,12 @@ Targets: Render service `jaipuria-moodle-mcp` (`moodle-mcp.tryrehearsal.ai`) · 
 **Moodle Data** `sadbfvfcmmxgtatfjfmc` · New Relic **EU** acct `8495484`.
 Deeper detail: `PRODUCTION_READINESS.md`, `RECORDING_ENABLEMENT.md`, `GAP_ANALYSIS.md`.
 
+## Status snapshot (2026-09-22)
+**✅ Done:** §3 audit backend applied to prod; audit key minted + **validated with a live 204 write**; §4 `create_report` cost cap shipped; §7 retention purge **scheduled** (pg_cron `mcp-security-retention-purge`, daily 03:00 UTC) + `mcp_audit` RLS enabled/locked + privacy notice **drafted** (`docs/PRIVACY_NOTICE.md`); §8 correlation header **merged** (PR #29).
+**⏳ In progress:** §3 — pasting `SUPABASE_AUDIT_KEY` + `MCP_AUDIT_HMAC_KEY` into Render + Save/deploy + re-auth (then recording is LIVE).
+**⛔ Remaining blockers for a safe 5k launch:** §1 pin OAuth keys (+ cross-client-PKCE), §2 off the free plan, §4 `MCP_REDIS_URL`, §7 **publish** the drafted notice.
+**🟠 Do-soon:** §5 New Relic key + alerts, §6 report-queue check, §8 merge PR #30 (Rajika) + gateway deploy, §9 load test + ramp.
+
 ---
 
 ## 1. Secrets & auth stability (do first — a wrong move here is the outage we already hit)
@@ -32,8 +38,10 @@ Follow `scripts/RECORDING_ENABLEMENT.md`; in short:
 - [ ] 🟢 Tune `MCP_CREATE_REPORT_LIMIT` (default 60/user/hour) if faculty legitimately generate larger batches.
 
 ## 5. Monitoring & alerting
-- [ ] 🟠 Set **`NEW_RELIC_LICENSE_KEY`** (EU ingest key) → OTel tool + `mcp.auth` spans start flowing.
-- [ ] 🟠 Run `NEW_RELIC_USER_API_KEY=… ALERT_EMAIL=… bash monitoring/newrelic_uptime_alert.sh` (uptime monitor + policy), then add the APM NRQL conditions from `monitoring/README.md`.
+- [ ] 🟠 Set **`NEW_RELIC_LICENSE_KEY`** — the **EU Ingest-License** key for acct 8495484 (NOT a User/`NRAK-` or Insights key; must be the EU-region key, else the OTLP endpoint 401/403s and spans are silently dropped). One switch turns on **all three signals**: tool + `mcp.auth` **spans**, host/process + app **metrics** (`mcp.tool.calls`/`.duration`, `mcp.auth.calls`, CPU/mem/RSS), and (opt-in via `MCP_OTEL_LOGS=true`) **logs**. Traces + metrics default on; each toggles via `MCP_OTEL_TRACES/_METRICS/_LOGS`. Set `MCP_SERVICE_INSTANCE_ID` to the instance id once scaled.
+- [ ] 🟠 **Verify ingest** after setting the key: confirm service `jaipuria-moodle-mcp` appears in NR (EU), or grep Render logs for OTLP export errors — export failures are swallowed, so a wrong key/region shows as silence, not an error.
+- [ ] 🟠 Run `NEW_RELIC_USER_API_KEY=… ALERT_EMAIL=… bash monitoring/newrelic_uptime_alert.sh` (uptime monitor + policy), then add the span + metric NRQL conditions from `monitoring/README.md`.
+- [ ] 🟢 W3C `traceparent` is honoured for end-to-end traces — once **JChat** is OTel-instrumented, JChat→MCP stitches into one distributed trace (no MCP change needed).
 
 ## 6. Report generation at scale
 - [ ] 🟠 Confirm `AGENT_REPORT_QUEUE=true` + `AGENT_SHARED_SECRET` (≥32 chars) so generation is queued, not synchronous, under load.

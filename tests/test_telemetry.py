@@ -76,6 +76,52 @@ telemetry.end_span(None, "failure", "auth_error", None)               # explicit
 telemetry.end_span(None)                                              # no-arg None path
 check("start_span/end_span never raise (incl. None)", True)
 
+print("\n[ metrics/logs endpoints + service.instance.id ]")
+check("metrics endpoint appends /v1/metrics",
+      settings.otel_metrics_endpoint() == "https://otlp.eu01.nr-data.net/v1/metrics")
+check("logs endpoint appends /v1/logs",
+      settings.otel_logs_endpoint() == "https://otlp.eu01.nr-data.net/v1/logs")
+check("instance id falls back to a non-empty hostname",
+      isinstance(settings.otel_instance_id(), str) and settings.otel_instance_id() != "")
+_orig_instance = settings.service_instance_id
+settings.service_instance_id = "render-abc123"
+check("explicit MCP_SERVICE_INSTANCE_ID wins", settings.otel_instance_id() == "render-abc123")
+settings.service_instance_id = _orig_instance
+check("traces + metrics on by default, logs OFF (PII caution)",
+      settings.otel_traces is True and settings.otel_metrics is True
+      and settings.otel_logs is False)
+
+print("\n[ metric + shutdown helpers are safe no-ops ]")
+telemetry.record_tool_metric("get_student", "success", None, "noida", 0.012)  # must not raise
+telemetry.record_tool_metric("whoami", "failure", "unauthorized", None, None)
+telemetry.record_auth_metric("oauth", "success")
+telemetry.record_auth_metric("static", "failure")
+telemetry.shutdown_telemetry()   # installed or not — idempotent, never raises
+telemetry.shutdown_telemetry()   # second call is a no-op
+check("record_tool_metric / record_auth_metric / shutdown never raise", True)
+
+print("\n[ W3C trace-context propagation is safe ]")
+check("extract_context(None) is None", telemetry.extract_context(None) is None)
+# A well-formed traceparent must parse (to a context when OTel present, else None) — never raise.
+telemetry.extract_context(
+    {"traceparent": "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"})
+telemetry.extract_context({"traceparent": "garbage"})            # malformed → safe
+security._start_tool_span("get_student", {"traceparent": "bogus"})  # header path must not raise
+check("extract_context / span-with-headers never raise", True)
+
+print("\n[ log-export feedback-loop filter ]")
+import logging as _logging
+_filt = telemetry._DropExporterLogs()
+
+
+def _rec(name):
+    return _logging.LogRecord(name, _logging.ERROR, __file__, 1, "x", None, None)
+
+
+check("drops opentelemetry.* export logs", _filt.filter(_rec("opentelemetry.exporter.otlp")) is False)
+check("drops urllib3 logs", _filt.filter(_rec("urllib3.connectionpool")) is False)
+check("keeps app logs", _filt.filter(_rec("moodle-mcp")) is True)
+
 _set(**_ORIG)
 print(f"\n{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)

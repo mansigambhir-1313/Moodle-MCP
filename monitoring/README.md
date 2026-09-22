@@ -33,6 +33,41 @@ call — `mcp.tool.<name>`, `service.name='jaipuria-moodle-mcp'`, attributes `mc
 | auth-denial surge | `SELECT count(*) FROM Span WHERE service.name = 'jaipuria-moodle-mcp' AND name = 'mcp.auth' AND mcp.outcome = 'failure'` | > N for 5m |
 | auth p95 latency | `SELECT percentile(duration.ms, 95) FROM Span WHERE service.name = 'jaipuria-moodle-mcp' AND name = 'mcp.auth'` | > 1500 ms for 5m (Google tokeninfo per request) |
 
+## Host / process metrics + app counters (once NEW_RELIC_LICENSE_KEY is set)
+Beyond spans, the MCP exports **metrics** (on by default; `MCP_OTEL_METRICS=false` to
+disable) so you can see saturation that spans don't show — essential for judging 5k
+capacity:
+- **Host + process gauges** via system-metrics instrumentation — `process.runtime.cpu.*`,
+  `process.runtime.memory` / RSS, open file descriptors, etc. (needs
+  `opentelemetry-instrumentation-system-metrics`; absent → app counters still export).
+- **App instruments** — `mcp.tool.calls` (counter, dims `mcp.tool`/`mcp.outcome`/
+  `mcp.error_code`/`mcp.campus_scope`), `mcp.tool.duration` (histogram, seconds),
+  `mcp.auth.calls` (counter, `mcp.auth.mode`/`mcp.outcome`). Aggregated, so unaffected by
+  trace sampling — the reliable RED signal alongside spans.
+
+Suggested metric conditions:
+
+| Condition | NRQL | Threshold |
+|-----------|------|-----------|
+| memory pressure | `SELECT latest(process.runtime.memory) FROM Metric WHERE service.name = 'jaipuria-moodle-mcp'` | > 80% of instance RAM for 10m |
+| tool error-rate (metric) | `SELECT percentage(sum(mcp.tool.calls), WHERE mcp.outcome='failure') FROM Metric WHERE service.name = 'jaipuria-moodle-mcp'` | > 5% for 5m |
+| per-instance isolation | facet any of the above `FACET service.instance.id` | spot one bad node |
+
+## Logs (opt-in)
+Log forwarding is **OFF by default** (`MCP_OTEL_LOGS=true` to enable) so operational
+logs aren't shipped to NR until confirmed PII-free (httpx access-token URLs are already
+quieted at boot). When on, root-logger records flow to NR Logs, correlated to traces.
+
+## Trace propagation & instance id
+Incoming **W3C `traceparent`** is honoured, so once JChat is OTel-instrumented a
+JChat→MCP call is a single distributed trace (today each MCP call is a clean root span).
+Every span/metric/log carries **`service.instance.id`** (`MCP_SERVICE_INSTANCE_ID`, else
+hostname) — set it to the Render instance id to tell nodes apart under horizontal scale.
+
+## Flush on deploy
+Providers force-flush on graceful shutdown (ASGI lifespan hook + atexit), so a
+redeploy/SIGTERM doesn't drop the last batch and under-count the signal around deploys.
+
 ## Usage analytics (from the audit ledger, not NR)
 Per-user activity, most-queried students, tool-usage mix, adoption/DAU come from the
 Supabase audit ledger — query `mcp_audit.v_activity` (see `docs/DATA_CAPTURE_PLAN.md`).
