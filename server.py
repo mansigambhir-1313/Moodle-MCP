@@ -187,14 +187,13 @@ actions.register(mcp, get_authenticated_service)      # create_report (the one w
 
 app = mcp.http_app()
 
-# Flush buffered spans/metrics/logs on graceful shutdown. atexit (registered in
-# setup_telemetry) is the belt, but doesn't fire on every container-kill path; this
-# ASGI-lifespan hook is the braces so a redeploy/SIGTERM doesn't drop the last batch
-# and under-count the error/throughput/latency signal around every deploy. The ASGI
-# wrappers below forward the lifespan scope untouched, so this still runs.
-from telemetry import shutdown_telemetry  # noqa: E402
-
-app.add_event_handler("shutdown", shutdown_telemetry)
+# NB: buffered spans/metrics/logs are flushed on shutdown by the atexit hook that
+# setup_telemetry() registers (only when telemetry is enabled). We deliberately do NOT
+# add a Starlette shutdown-event/lifespan hook here: Starlette 1.x removed
+# add_event_handler, and uvicorn's graceful SIGTERM shutdown returns to a normal
+# interpreter exit — so atexit fires and drains the last batch. A hard SIGKILL bypasses
+# atexit AND any lifespan hook alike, so a lifespan hook would add no real coverage
+# while coupling us to FastMCP's internal lifespan wiring.
 
 
 async def health_check(request: Request) -> JSONResponse:
