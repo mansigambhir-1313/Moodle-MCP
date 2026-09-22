@@ -55,7 +55,8 @@ Legend: **REQ** = requirement/expectation · **NOW** = shipped/enforced today ·
 
 ### G6. Test coverage is unit/mock-only — no integration, RLS, or load tests
 - **NOW**: 15 plain-assert files, all mocked. The campus-scoping AND-filter, `mcp_audit` RLS (admin-only reads), the SECURITY DEFINER RPC, and the OAuth/DCR flow are verified only by **reasoning against mocks**, never against a real (test) Supabase/PostgREST or a running server.
-- **GAP**: no proof that RLS actually blocks a non-admin read of `mcp_audit`; no end-to-end auth test; no gateway-routing test (gateway undeployed); no concurrency/load test. First real CI run will only exercise the unit suite.
+- **PARTIALLY CLOSED (2026-09-22):** `mcp_audit` lockdown is now **proven against live prod**, not just reasoned — `anon`/`authenticated` have **no schema USAGE** (can't reach any audit table), RLS is on for every base table, and even `mcp_audit_writer` has **no SELECT** (write-only via the SECURITY DEFINER RPC; only admin/`service_role` can read). Repeatable proof: `sql/verify_mcp_audit_lockdown.sql`.
+- **GAP (remaining)**: no end-to-end auth test against a running server; no gateway-routing test (gateway undeployed); no concurrency/load test; partition tables have RLS off (harmless — parent RLS + no grants + no schema usage cover them; optional defense-in-depth noted in the verify script). CI still only exercises the unit suite.
 
 ### G7. JChat integration incomplete
 - **GAP**: (a) the `X-Request-Id` correlation header is a documented, **uncommitted draft** in the JChat repo — prompts aren't yet joinable to tool calls (Rajika). (b) `OAUTH_ALLOW_CROSS_CLIENT_PKCE` defaults off → the Claude.ai connector's cross-node token exchange can fail (likely re-auth-pain contributor). (c) `jaipuriaschools.ac.in` is admitted by JChat as USER but **denied by the MCP** (not a subdomain of `jaipuria.ac.in`) — graceful-denial UX unverified; decision pending.
