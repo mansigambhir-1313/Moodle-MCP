@@ -6,3 +6,8 @@ __pycache__/
 # local screenshots / images (never commit — may contain PII)
 WhatsApp Image *.jpeg
 *.jpeg
+.audit_key.local
+.audit_env.local
+.oauth_env.local
+.render_env.local
+*.local
