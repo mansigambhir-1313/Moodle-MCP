@@ -11,3 +11,5 @@ WhatsApp Image *.jpeg
 .oauth_env.local
 .render_env.local
 *.local
+RENDER_GO_LIVE.md
+*.secrets.md
