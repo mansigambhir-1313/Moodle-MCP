@@ -109,6 +109,24 @@ telemetry.extract_context({"traceparent": "garbage"})            # malformed →
 security._start_tool_span("get_student", {"traceparent": "bogus"})  # header path must not raise
 check("extract_context / span-with-headers never raise", True)
 
+print("\n[ trace sampler: an unsampled upstream must NOT drop our spans ]")
+check("otel_sample_ratio defaults to 1.0", settings.otel_sample_ratio == 1.0)
+try:
+    from opentelemetry.sdk.trace.sampling import Decision, ParentBased
+    from opentelemetry.trace import (NonRecordingSpan, SpanContext, TraceFlags,
+                                     set_span_in_context)
+    smp = telemetry._build_sampler(settings)
+    check("sampler is ParentBased", isinstance(smp, ParentBased))
+    _parent = SpanContext(trace_id=0x0af7651916cd43dd8448eb211c80319c,
+                          span_id=0xb7ad6b7169203331, is_remote=True,
+                          trace_flags=TraceFlags(0x00))  # unsampled upstream
+    _res = smp.should_sample(set_span_in_context(NonRecordingSpan(_parent)),
+                             _parent.trace_id, "mcp.tool.whoami")
+    check("unsampled remote parent -> RECORD_AND_SAMPLE (not dropped)",
+          _res.decision == Decision.RECORD_AND_SAMPLE)
+except ImportError:
+    check("sampler behavior (OTel SDK not installed here — skipped)", True)
+
 print("\n[ log-export feedback-loop filter ]")
 import logging as _logging
 _filt = telemetry._DropExporterLogs()

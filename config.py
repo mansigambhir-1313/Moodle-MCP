@@ -132,6 +132,13 @@ class Settings(BaseSettings):
     # Metric export cadence (ms). New Relic recommends ≥ 5s; 60s is plenty for
     # host/process gauges + tool counters and keeps ingest/cost low at 5k users.
     otel_metric_interval_ms: int = Field(default=60000, alias="MCP_OTEL_METRIC_INTERVAL_MS")
+    # Head sampling ratio for our SERVER entry spans (0..1, default 1.0 = keep all).
+    # Our spans are the primary operational signal, so we NEVER let an upstream's
+    # "unsampled" traceparent demote them below this ratio (see telemetry._build_sampler);
+    # a sampled upstream is always honored so distributed traces stay complete. Dial down
+    # (e.g. 0.2) only if span volume/cost bites at 5k — error/throughput RATES survive in
+    # the mcp.tool.* metrics regardless, since metrics ignore trace sampling.
+    otel_sample_ratio: float = Field(default=1.0, alias="MCP_OTEL_SAMPLE_RATIO")
     # Distinguishes one running instance from another once horizontally scaled — set to
     # the platform's instance/dyno id, else the hostname is used. Attached as
     # service.instance.id on every span/metric/log so a single bad node is isolable.

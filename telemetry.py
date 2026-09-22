@@ -50,20 +50,48 @@ def _resource(settings):
     })
 
 
+def _build_sampler(settings):
+    """A sampler that never lets an UNSAMPLED upstream traceparent drop our own SERVER
+    spans, while still honoring a SAMPLED upstream so distributed traces stay whole.
+
+    Rationale: the MCP server's spans are the primary operational signal — losing them
+    because a client (or proxy) propagated a `-00` traceparent would be silent blindness
+    (OTel's default ParentBased inherits that "don't sample"). So:
+      * root (no parent)          -> our ratio (default 1.0 = keep all)
+      * remote parent SAMPLED     -> always keep (complete cross-service trace)
+      * remote parent NOT sampled -> our ratio (override the upstream 'no'; never demoted)
+    MCP_OTEL_SAMPLE_RATIO dials the ratio down for volume/cost at scale; error/throughput
+    RATES still survive in the mcp.tool.* metrics, which ignore trace sampling.
+    """
+    from opentelemetry.sdk.trace.sampling import (
+        ALWAYS_ON, ParentBased, TraceIdRatioBased)
+    ratio = settings.otel_sample_ratio
+    ratio = 0.0 if ratio < 0 else (1.0 if ratio > 1 else ratio)
+    base = ALWAYS_ON if ratio >= 1.0 else TraceIdRatioBased(ratio)
+    return ParentBased(
+        root=base,
+        remote_parent_sampled=ALWAYS_ON,
+        remote_parent_not_sampled=base,
+        local_parent_sampled=ALWAYS_ON,
+        local_parent_not_sampled=base,
+    )
+
+
 def _setup_traces(settings, resource) -> bool:
     from opentelemetry import trace
     from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
     from opentelemetry.sdk.trace import TracerProvider
     from opentelemetry.sdk.trace.export import BatchSpanProcessor
     global _tracer_provider
-    provider = TracerProvider(resource=resource)
+    provider = TracerProvider(resource=resource, sampler=_build_sampler(settings))
     provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(
         endpoint=settings.otel_traces_endpoint(),
         headers=settings.otel_headers(),
     )))
     trace.set_tracer_provider(provider)
     _tracer_provider = provider
-    log.info("OTel traces enabled → %s", settings.otel_traces_endpoint())
+    log.info("OTel traces enabled → %s (sample_ratio=%s, upstream-unsampled never drops our spans)",
+             settings.otel_traces_endpoint(), settings.otel_sample_ratio)
     return True
 
 

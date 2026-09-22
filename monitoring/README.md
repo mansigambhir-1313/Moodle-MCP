@@ -58,9 +58,16 @@ Log forwarding is **OFF by default** (`MCP_OTEL_LOGS=true` to enable) so operati
 logs aren't shipped to NR until confirmed PII-free (httpx access-token URLs are already
 quieted at boot). When on, root-logger records flow to NR Logs, correlated to traces.
 
-## Trace propagation & instance id
+## Trace propagation, sampling & instance id
 Incoming **W3C `traceparent`** is honoured, so once JChat is OTel-instrumented a
 JChat→MCP call is a single distributed trace (today each MCP call is a clean root span).
+**Sampling is upstream-resistant**: the `ParentBased` sampler keeps our SERVER spans at
+`MCP_OTEL_SAMPLE_RATIO` (default 1.0 = all) even when a client/proxy propagates an
+*unsampled* `traceparent` (`-00`) — otherwise OTel's default would inherit that "don't
+sample" and silently drop our traces while metrics kept flowing. A *sampled* upstream is
+always honoured so cross-service traces stay whole. Dial the ratio down only if span
+volume bites at 5k; error/throughput **rates** survive in the `mcp.tool.*` metrics
+regardless (metrics ignore trace sampling).
 Every span/metric/log carries **`service.instance.id`** (`MCP_SERVICE_INSTANCE_ID`, else
 hostname) — set it to the Render instance id to tell nodes apart under horizontal scale.
 
