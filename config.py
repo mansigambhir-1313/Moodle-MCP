@@ -4,7 +4,7 @@ import logging
 import os
 from urllib.parse import urlsplit
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 log = logging.getLogger(__name__)
@@ -71,6 +71,16 @@ class Settings(BaseSettings):
     server_name: str = Field(default="jaipuria-moodle-mcp", alias="MCP_SERVER_NAME")
     server_version: str = Field(default="1.0.0", alias="MCP_SERVER_VERSION")
     server_base_url: str = Field(default="", alias="MCP_SERVER_BASE_URL")
+
+    @field_validator("server_base_url")
+    @classmethod
+    def _no_trailing_slash(cls, v: str) -> str:
+        # RFC 8414 §3.3: the OAuth issuer must be an EXACT string. A trailing slash makes the
+        # published issuer "https://…/", which fails strict issuer checks (e.g. the Cloudflare
+        # OS gatekeeper's @modelcontextprotocol/client) and the AIA-1390/1391 acceptance
+        # criteria. Normalise here so the value drives GoogleProvider's issuer without a slash,
+        # regardless of how MCP_SERVER_BASE_URL is entered in the deploy env.
+        return v.rstrip("/") if v else v
     report_public_base_url: str = Field(
         default="https://reports.tryrehearsal.ai", alias="REPORT_PUBLIC_BASE_URL")
     storage_bucket: str = Field(default="student-reports", alias="STORAGE_BUCKET")
